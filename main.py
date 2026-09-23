@@ -4,7 +4,7 @@
 1. **以图搜本子** → ``<前缀>搜本``（别名 ``搜本子`` / ``soutu`` / ``找图``）上传图片调用
    soutubot.moe（搜图Bot酱）做相似检索。**只接受图片**（消息图片 / 引用图片 / 图片直链）。
 2. **搜图（自动判别）** → ``<前缀>搜图``（别名 ``pixiv`` / ``saucenao``）：
-   - 有图片 / 图片直链 → 调用 SauceNAO 反查 Pixiv 出处（需配置 API Key，默认仅 Pixiv 库）；
+   - 有图片 / 图片直链 → **双源并行**反查出处（SauceNAO + ascii2d；ascii2d 无需 API Key）；
    - 纯关键词 → 调用 Safebooru DAPI 按标签检索（**不需要** API Key）。
 
 帮助指令：``搜本帮助`` / ``搜图帮助``（各有英文别名，见 ``_COMMAND_NAMES``）。
@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import re
 import time
@@ -28,12 +29,14 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
-from .core.cache import TTLCache, make_image_key, make_saucenao_key, make_tags_key
-from .core.formatter import SourceOutcome, blocks_to_components, format_outcome
+from .core.cache import TTLCache, make_ascii2d_key, make_image_key, make_saucenao_key, make_tags_key
+from .core.formatter import SourceOutcome, blocks_to_components, format_outcome, truncate_blocks
+from .core.ascii2d_client import Ascii2dClient
 from .core.image_source import ImagePayload, ImageSource, is_http_url
 from .core.safebooru_client import SafebooruClient
 from .core.saucenao_client import (
     SaucenaoClient,
+    describe_db_mask,
     resolve_db_mask,
     resolve_hide,
     resolve_min_similarity,
@@ -75,11 +78,18 @@ _ID_SPLIT_RE = re.compile(r"[,\s]+")
 # 指令受限时的友好提示
 ACCESS_DENIED_TEXT = "🚫 本会话未启用搜图功能，如需使用请联系管理员。"
 
-# SauceNAO 未配置 API Key 时的引导（**发请求前**就提示，避免无谓配额消耗）
+# SauceNAO 未配置 API Key 时的引导（图片反查时在 SauceNAO 段落处提示；ascii2d 照常执行）
 SAUCENAO_KEY_MISSING_TEXT = (
     "⚠️ 尚未配置 SauceNAO API Key，无法使用「搜图」的以图反查（P 站出处）。\n"
     "请在插件配置中填写 `saucenao_api_key`，申请地址："
     "https://saucenao.com/user.php?page=search-api"
+)
+
+# 两个图片反查源都被关闭时的提示（不要静默返回空结果）
+ALL_SOURCES_DISABLED_TEXT = (
+    "⚙️ 图片反查的两个来源（SauceNAO 与 ascii2d）都已在插件配置中关闭。\n"
+    "请至少启用其中一个：`saucenao_enable` 或 `ascii2d_enable`。\n"
+    "（提示：ascii2d 不需要 API Key，只需能访问 ascii2d.net。）"
 )
 
 # SauceNAO 未附图时的用法提示
@@ -211,7 +221,7 @@ def _render_book_keyword_hint(prefix: str) -> str:
 
 _HELP_TEMPLATE = """📖 搜图用法
 
-① 以图反查 P 站（SauceNAO，默认只查 Pixiv 库）
+① 以图反查出处（双源并行：SauceNAO + ascii2d）
    · 发送图片并附带 `{p}搜图`，或用 `{p}搜图 <图片链接>`
    · 别名：`pixiv`、`saucenao`
 ② 关键词搜图（Safebooru）
@@ -220,9 +230,10 @@ _HELP_TEMPLATE = """📖 搜图用法
 ④ 查看帮助：`{p}搜图帮助`
 
 说明：
-· ① 需先在插件配置中填写 `saucenao_api_key`（申请：https://saucenao.com/user.php?page=search-api）
-· ① 默认只检索 Pixiv 系列库，可用配置 `saucenao_db_mask` 调整（96=仅 Pixiv）
-· ① 免费配额：**150 次/天、4 次/30 秒**；中国大陆访问通常需要代理
+· ① SauceNAO 需先在插件配置中填写 `saucenao_api_key`（申请：https://saucenao.com/user.php?page=search-api）；
+  未配置时会**跳过 SauceNAO 但仍运行 ascii2d**（ascii2d 不需要任何 Key）
+· ① ascii2d 覆盖 Pixiv/Twitter 等画师首发站，对**近期图**更有效；需能访问日本站点（大陆可能需要代理）
+· ① SauceNAO 默认检索**全部活跃库**（`saucenao_db_mask=0`）；免费配额 150 次/天、4 次/30 秒
 · ② 走 Safebooru 图库，不需要 API Key
 · 搜图**只能通过指令触发**，群内有人发图不会自动搜图
 · 默认只回复文字与来源链接，不发送缩略图"""
@@ -376,10 +387,18 @@ class SoutuSearchPlugin(Star):
         self.soutu_base_url = _to_str(cfg.get("soutu_base_url"), "https://soutubot.moe")
         self.safebooru_base_url = _to_str(cfg.get("safebooru_base_url"), "https://safebooru.org")
 
+        # ---- 图片反查「双源」配置（全部带默认值；两个源默认都开）----
+        self.saucenao_enable = _to_bool(cfg.get("saucenao_enable"), True)
+        self.ascii2d_enable = _to_bool(cfg.get("ascii2d_enable"), True)
+        # ascii2d 无需 API Key；base_url 可改镜像 / 反代
+        self.ascii2d_base_url = _to_str(cfg.get("ascii2d_base_url"), "https://ascii2d.net")
+        self.ascii2d_bovw = _to_bool(cfg.get("ascii2d_bovw"), False)
+
         # ---- SauceNAO（搜 P 站）配置（全部带默认值，非法值回退安全默认）----
-        # API Key 允许为空串（未配置时由指令入口给出引导，不发起请求）
+        # API Key 允许为空串（未配置时跳过 SauceNAO、但仍会运行 ascii2d）
         self.saucenao_api_key = _to_str(cfg.get("saucenao_api_key"), "")
         self.saucenao_base_url = _to_str(cfg.get("saucenao_base_url"), "https://saucenao.com")
+        # 默认（schema）= 0 = 全部索引；非法值回退到保守的 96（Pixiv 限定），见 resolve_db_mask
         self.saucenao_db_mask = resolve_db_mask(cfg.get("saucenao_db_mask"))
         self.saucenao_min_similarity = resolve_min_similarity(cfg.get("saucenao_min_similarity"))
         self.saucenao_hide = resolve_hide(cfg.get("saucenao_hide"))
@@ -425,6 +444,11 @@ class SoutuSearchPlugin(Star):
             hide=self.saucenao_hide,
             timeout=self.request_timeout,
         )
+        self.ascii2d = Ascii2dClient(
+            base_url=self.ascii2d_base_url,
+            bovw=self.ascii2d_bovw,
+            timeout=self.request_timeout,
+        )
         self.cache = TTLCache(default_ttl=self.cache_ttl)
 
         logger.info(
@@ -442,12 +466,20 @@ class SoutuSearchPlugin(Star):
             "; ".join(str(root) for root in self.allowed_roots) or "（空：拒绝一切本地文件）",
         )
         logger.info(
-            "[搜图] SauceNAO(搜图-以图反查): base=%s, dbmask=%s, minsim=%s, hide=%s, key=%s",
+            "[搜图] SauceNAO(搜图-以图反查): enable=%s, base=%s, dbmask=%s〔%s〕, minsim=%s, hide=%s, key=%s",
+            self.saucenao_enable,
             self.saucenao_base_url,
             self.saucenao_db_mask,
+            describe_db_mask(self.saucenao_db_mask),
             self.saucenao_min_similarity,
             self.saucenao_hide,
             "已配置" if self.saucenao_api_key else "未配置",
+        )
+        logger.info(
+            "[搜图] ascii2d(搜图-以图反查): enable=%s, base=%s, bovw=%s",
+            self.ascii2d_enable,
+            self.ascii2d_base_url,
+            self.ascii2d_bovw,
         )
 
     # ------------------------------------------------------------------ #
@@ -639,6 +671,7 @@ class SoutuSearchPlugin(Star):
             ("soutu", self.soutu),
             ("booru", self.booru),
             ("saucenao", self.saucenao),
+            ("ascii2d", self.ascii2d),
         ):
             try:
                 await obj.close()
@@ -757,9 +790,8 @@ class SoutuSearchPlugin(Star):
         判别顺序：
         1. ``has_image(event)`` 做**纯组件结构检测**（不下载）判断有无图片；再看 ``text``
            是否为 http(s) 图片直链；
-        2. 有图片 **或** 文本是图片直链 → 走 SauceNAO 反查分支：
-           - **先在图片分支内检查 ``saucenao_api_key``**：为空则回引导并**直接返回，不下载**；
-           - 有 key：有图片走 ``from_event``，否则走 ``from_source(text)``（下载失败给出提示）；
+        2. 有图片 **或** 文本是图片直链 → 走图片反查分支 ``_dispatch_saucenao``
+           （**双源并行**：SauceNAO + ascii2d；是否下载、跑哪些源由该分支决定）；
         3. 否则若 ``text`` 非空（纯关键词）→ 走 Safebooru 关键词路径（**不需要** api_key）；
         4. 无图无参数 → 输出「搜图帮助」。
         """
@@ -767,10 +799,6 @@ class SoutuSearchPlugin(Star):
         is_image_url = bool(text) and is_http_url(text)
 
         if has_image or is_image_url:
-            # 图片分支：**先查 key、后下载**，未配置 key 时零下载、零配额消耗
-            if not self.saucenao_api_key:
-                yield event.plain_result(SAUCENAO_KEY_MISSING_TEXT)
-                return
             async for result in self._dispatch_saucenao(event, text):
                 yield result
             return
@@ -871,75 +899,142 @@ class SoutuSearchPlugin(Star):
         yield self._emit(event, blocks)
 
     # ------------------------------------------------------------------ #
-    # SauceNAO（「搜图」的以图反查分支）调度
+    # 图片反查调度（「搜图」的以图分支）：SauceNAO + ascii2d **双源并行**
     # ------------------------------------------------------------------ #
     async def _dispatch_saucenao(self, event: AstrMessageEvent, text: str = ""):
-        """SauceNAO 反查调度：帮助子指令 → 取图（消息图片 / http 图片直链）→ 反查。"""
+        """「搜图」图片分支调度：**双源并行**反查（SauceNAO + ascii2d）。
+
+        流程：
+        1. 文本子帮助 → 回「搜图帮助」；
+        2. 两个源都关 → 回明确的配置提示（**不静默返回空**）；
+        3. 判断是否需要图片字节：只要 ascii2d 启用、或 SauceNAO 启用且已配置 key，就需要；
+           需要时先取图（消息图片 → http 图片直链），取不到给可读提示；
+        4. 并行执行已启用的源（``asyncio.gather`` + ``return_exceptions=True``，**必须并行**：
+           ascii2d 单次可能 10~20 秒，串行会翻倍）；**单源失败绝不影响另一源**；
+        5. SauceNAO 未配置 key 时**跳过该源但仍跑 ascii2d**，并在 SauceNAO 段落位置给出引导。
+
+        .. note::
+           保持方法名不变（历史调用点/测试直接调用 ``_dispatch_saucenao``）。
+        """
         if text in ("帮助", "help", "-h", "--help", "用法"):
             yield event.plain_result(self._help_text())
             return
 
-        try:
-            payload = await self.image_source.from_event(event)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[搜图] 取图失败（SauceNAO）: %s", exc)
-            payload = None
-
-        # 帮助文案宣称支持 `<指令> <图片链接>`，这里真正落实该路径（含 SSRF 防护）
-        if payload is None and is_http_url(text):
-            try:
-                payload = await self.image_source.from_source(text)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[搜图] 图片链接获取失败（SauceNAO）: %s", exc)
-                yield event.plain_result(IMAGE_URL_FETCH_FAIL_TEXT.format(err=exc))
-                return
-
-        if payload is None:
-            yield event.plain_result(SAUCENAO_NO_IMAGE_TEXT.format(p=self._help_prefix()))
+        sauce_on = self.saucenao_enable
+        ascii_on = self.ascii2d_enable
+        if not (sauce_on or ascii_on):
+            yield event.plain_result(ALL_SOURCES_DISABLED_TEXT)
             return
 
-        async for result in self._search_by_saucenao_image(event, payload):
-            yield result
-
-    async def _search_by_saucenao_image(self, event: AstrMessageEvent, payload: ImagePayload):
-        """SauceNAO 反查并回复（独立缓存命名空间，避免与 soutu 结果互相污染）。"""
-        cache_key = make_saucenao_key(payload.data)
-        started = time.perf_counter()
-        outcome: SourceOutcome | None = self.cache.get(cache_key)
-        note = ""
-
-        if outcome is not None:
-            note = "（缓存）"
-        else:
+        # 只有「实际要跑的源」才需要图片字节（避免无谓下载）
+        need_image = ascii_on or (sauce_on and bool(self.saucenao_api_key))
+        payload: ImagePayload | None = None
+        if need_image:
             try:
-                outcome = await self.saucenao.search(
-                    payload.data,
-                    filename=payload.filename,
-                    mime=payload.mime,
-                )
+                payload = await self.image_source.from_event(event)
             except Exception as exc:  # noqa: BLE001
-                logger.error("[搜图] SauceNAO 反查失败: %s", exc, exc_info=True)
-                yield event.plain_result(
-                    f"😥 以图反查（SauceNAO）失败：{exc}\n"
-                    "请稍后重试；中国大陆访问 SauceNAO 通常需要代理（可在 AstrBot 全局配置 http_proxy）。"
-                )
+                logger.warning("[搜图] 取图失败（双源反查）: %s", exc)
+                payload = None
+
+            # 帮助文案宣称支持 `<指令> <图片链接>`，这里真正落实该路径（含 SSRF 防护）
+            if payload is None and is_http_url(text):
+                try:
+                    payload = await self.image_source.from_source(text)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[搜图] 图片链接获取失败（双源反查）: %s", exc)
+                    yield event.plain_result(IMAGE_URL_FETCH_FAIL_TEXT.format(err=exc))
+                    return
+
+            if payload is None:
+                yield event.plain_result(SAUCENAO_NO_IMAGE_TEXT.format(p=self._help_prefix()))
                 return
-            self.cache.set(cache_key, outcome)
+        else:
+            # 一个源都不需要图片（仅 SauceNAO 启用且未配置 key）→ 直接给引导，零下载
+            yield self._emit(event, self._compose_blocks(self._no_key_guide_blocks(), elapsed=0.0))
+            return
 
+        # 并行执行已启用的源
+        names: list[str] = []
+        coros: list = []
+        if sauce_on and self.saucenao_api_key:
+            names.append("saucenao")
+            coros.append(self._run_saucenao_section(payload))
+        if ascii_on:
+            names.append("ascii2d")
+            coros.append(self._run_ascii2d_section(payload))
+
+        started = time.perf_counter()
+        gathered = await asyncio.gather(*coros, return_exceptions=True) if coros else []
         elapsed = time.perf_counter() - started
+        section_map = dict(zip(names, gathered))
 
-        header = (
-            f"🔍 搜图（SauceNAO 反查）完成{note}，命中 {len(outcome.results)} 条"
-            f"（相似度≥{self.saucenao_min_similarity}），耗时 {elapsed:.2f}s"
-        )
-        blocks = format_outcome(
+        # 组装分节输出（固定顺序：SauceNAO 段 → ascii2d 段）
+        section_blocks: list[dict] = []
+        if sauce_on:
+            if not self.saucenao_api_key:
+                section_blocks.extend(self._no_key_guide_blocks())
+            else:
+                section_blocks.extend(self._render_section_result("SauceNAO", section_map.get("saucenao")))
+        if ascii_on:
+            section_blocks.extend(self._render_section_result("ascii2d", section_map.get("ascii2d")))
+
+        yield self._emit(event, self._compose_blocks(section_blocks, elapsed=elapsed))
+
+    def _compose_blocks(self, section_blocks: list[dict], *, elapsed: float) -> list[dict]:
+        """加统一头行 + 分节内容，并对**整条消息**做一次字符截断。"""
+        blocks: list[dict] = []
+        blocks.append({"type": "text", "text": f"🔍 搜图（图片反查）完成，耗时 {elapsed:.2f}s"})
+        blocks.extend(section_blocks)
+        return truncate_blocks(blocks, self.max_reply_chars)
+
+    @staticmethod
+    def _no_key_guide_blocks() -> list[dict]:
+        """SauceNAO 未配置 key 时的「跳过」段落（仍提示申请地址）。"""
+        return [
+            {"type": "text", "text": "【SauceNAO】已跳过：未配置 api_key"},
+            {"type": "text", "text": SAUCENAO_KEY_MISSING_TEXT},
+        ]
+
+    def _render_section_result(self, label: str, result) -> list[dict]:
+        """把某源的运行结果渲染为一段消息块；异常 → 一段可读的失败说明（失败隔离）。"""
+        if isinstance(result, Exception):
+            logger.error("[搜图] %s 反查失败: %s", label, result)
+            return [{"type": "text", "text": f"【{label}】检索失败：{result}"}]
+        if result is None:
+            return [{"type": "text", "text": f"【{label}】无结果（未执行）。"}]
+        # result 为 (outcome, note)
+        outcome, note = result
+        return format_outcome(
             outcome,
             nsfw_send_image=self.nsfw_send_image,
             max_results=self.result_count,
-            header=header,
-            max_chars=self.max_reply_chars,
+            header=f"【{label}】命中 {len(outcome.results)} 条{note}",
+            max_chars=0,  # 分节不截断，整条消息最后统一截断
         )
-        yield self._emit(event, blocks)
+
+    async def _run_saucenao_section(self, payload: ImagePayload):
+        """执行 SauceNAO 反查，返回 ``(outcome, note)``（独立缓存命名空间）。"""
+        cache_key = make_saucenao_key(payload.data)
+        outcome: SourceOutcome | None = self.cache.get(cache_key)
+        if outcome is not None:
+            return outcome, "（缓存）"
+        outcome = await self.saucenao.search(payload.data, filename=payload.filename, mime=payload.mime)
+        self.cache.set(cache_key, outcome)
+        return outcome, ""
+
+    async def _run_ascii2d_section(self, payload: ImagePayload):
+        """执行 ascii2d 反查，返回 ``(outcome, note)``（独立缓存命名空间，含 bovw 维度）。"""
+        cache_key = make_ascii2d_key(payload.data, bovw=self.ascii2d_bovw)
+        outcome: SourceOutcome | None = self.cache.get(cache_key)
+        if outcome is not None:
+            return outcome, "（缓存）"
+        outcome = await self.ascii2d.search(payload.data, filename=payload.filename, mime=payload.mime)
+        self.cache.set(cache_key, outcome)
+        return outcome, ""
+
+    # ------------------------------------------------------------------ #
+    # 工具方法
+    # ------------------------------------------------------------------ #
 
     # ------------------------------------------------------------------ #
     # 工具方法

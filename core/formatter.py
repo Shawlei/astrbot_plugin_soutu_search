@@ -53,8 +53,10 @@ def _result_line(index: int, result: SearchResult) -> str:
     if rating:
         line += f" | 评级 {rating}"
 
-    # SauceNAO 反查的画师（Pixiv 等）：creator / author_name，或退化为 member(uid)
-    artist = extra.get("artist")
+    # 画师：SauceNAO 用 ``artist``（creator / author_name，或退化为 member(uid)）；
+    # ascii2d 用 ``author``（画师首发站的作者链接文本）。二者取其一，**无则不加**，
+    # 从而保证「无该字段时输出与改动前逐字一致」。
+    artist = extra.get("artist") or extra.get("author")
     if artist:
         line += f" | 画师 {artist}"
 
@@ -208,6 +210,20 @@ def format_outcome(
                     blocks.append({"type": "image", "url": result.thumbnail})
 
     return _truncate_blocks(blocks, max_chars)
+
+
+def truncate_blocks(
+    blocks: list[dict],
+    max_chars: int,
+    suffix: str = "…（结果过长已截断）",
+) -> list[dict]:
+    """对消息块列表做**整体**字符边界截断（公开入口）。
+
+    供「多源并行」场景使用：各源分别格式化（``max_chars=0`` 不截断）后再合并，
+    最后对**整条消息**统一截断一次，保证总长度不超上限。行为与 ``format_outcome`` 内部一致：
+    ``max_chars <= 0`` 不限制；image 块原样保留。
+    """
+    return _truncate_blocks(blocks, max_chars, suffix)
 
 
 def blocks_to_components(blocks: list[dict]) -> list:

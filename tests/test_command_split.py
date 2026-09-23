@@ -134,6 +134,30 @@ class _StubSaucenao:
         pass
 
 
+class _StubAscii2d:
+    """ascii2d provider 替身（避免测试触发真实联网）。"""
+
+    def __init__(self):
+        self.calls = []
+
+    async def search(self, image, **kw):
+        self.calls.append(kw)
+        return SourceOutcome(
+            results=[SearchResult(title="a2d", source="Pixiv", url="https://p/1", score=None)]
+        )
+
+    async def close(self):
+        pass
+
+
+def _chain_text(result) -> str:
+    """从 ``("plain", text)`` / ``("chain", comps)`` 结果中提取纯文本。"""
+    kind, payload = result
+    if kind == "plain":
+        return payload
+    return "\n".join(getattr(c, "text", "") for c in payload)
+
+
 def make_plugin(**cfg):
     return SoutuSearchPlugin(object(), cfg)
 
@@ -331,10 +355,12 @@ class TestSearchCommand(unittest.TestCase):
         return p, stub
 
     def test_search_with_message_image_goes_saucenao(self):
-        """「搜图」+ 图片 → SauceNAO 反查（saucenao.search 1 次，soutu.search 0 次）。"""
+        """「搜图」+ 图片 → **双源并行**：SauceNAO 与 ascii2d 各 1 次，soutu 0 次。 [工程师已改 #9]"""
         p, stub_sa = self._plugin_with_saucenao(saucenao_api_key="k")
+        stub_a2d = _StubAscii2d()
         stub_soutu = _StubSoutu()
         stub_booru = _StubBooru()
+        p.ascii2d = stub_a2d  # type: ignore[assignment]
         p.soutu = stub_soutu  # type: ignore[assignment]
         p.booru = stub_booru  # type: ignore[assignment]
 
@@ -344,14 +370,17 @@ class TestSearchCommand(unittest.TestCase):
         p.image_source.from_event = fake_from_event  # type: ignore[assignment]
         out = collect(p.sou_cmd(FakeEvent(text="/搜图", with_image=True), ""))
         self.assertEqual(len(stub_sa.calls), 1, "「搜图」+ 图片应走 SauceNAO")
+        self.assertEqual(len(stub_a2d.calls), 1, "「搜图」+ 图片也应并行走 ascii2d")
         self.assertEqual(stub_soutu.calls, [], "「搜图」不得走 soutubot 以图搜图")
         self.assertEqual(stub_booru.calls, [], "「搜图」不得把图片当关键词")
         self.assertEqual(out[0][0], "chain")
 
     def test_search_with_image_url_downloads_then_saucenao(self):
-        """「搜图」+ 图片直链 → 下载后走 SauceNAO。"""
+        """「搜图」+ 图片直链 → 下载后**双源并行**（SauceNAO + ascii2d）。 [工程师已改 #10]"""
         p, stub_sa = self._plugin_with_saucenao(saucenao_api_key="k")
+        stub_a2d = _StubAscii2d()
         stub_booru = _StubBooru()
+        p.ascii2d = stub_a2d  # type: ignore[assignment]
         p.booru = stub_booru  # type: ignore[assignment]
         calls = []
 
@@ -363,6 +392,7 @@ class TestSearchCommand(unittest.TestCase):
         out = collect(p.sou_cmd(FakeEvent(text="/搜图 http://x/a.jpg"), "http://x/a.jpg"))
         self.assertEqual(calls, ["http://x/a.jpg"], "应通过 from_source 下载图片链接")
         self.assertEqual(len(stub_sa.calls), 1)
+        self.assertEqual(len(stub_a2d.calls), 1)
         self.assertEqual(stub_booru.calls, [])
         self.assertEqual(out[0][0], "chain")
 
@@ -392,44 +422,46 @@ class TestSearchCommand(unittest.TestCase):
         self.assertEqual(len(stub_sa.calls), 0)
         self.assertEqual(out[0][0], "chain")
 
-    def test_search_image_without_api_key_hints_and_no_download(self):
-        """未配置 api_key 时，「搜图」+ 图片回 key 引导，且**零下载**。"""
+    def test_search_image_without_api_key_hints_and_runs_ascii2d(self):
+        """未配置 api_key：不再只回引导 —— 跳过 SauceNAO，但仍运行 ascii2d。 [工程师已改 #11]"""
         p = make_plugin()  # 无 key
         stub_sa = _StubSaucenao()
+        stub_a2d = _StubAscii2d()
         p.saucenao = stub_sa  # type: ignore[assignment]
-        downloaded = []
+        p.ascii2d = stub_a2d  # type: ignore[assignment]
 
-        async def boom_from_event(event):
-            downloaded.append("<from_event>")
+        async def fe(event):
             return ImagePayload(data=PNG, mime="image/png", filename="q.png")
 
-        async def boom_from_source(src):
-            downloaded.append(src)
-            return ImagePayload(data=PNG, mime="image/png", filename="a.png")
-
-        p.image_source.from_event = boom_from_event  # type: ignore[assignment]
-        p.image_source.from_source = boom_from_source  # type: ignore[assignment]
+        p.image_source.from_event = fe  # type: ignore[assignment]
         out = collect(p.sou_cmd(FakeEvent(text="/搜图", with_image=True), ""))
-        self.assertEqual(downloaded, [], "未配置 key 时不得下载图片")
-        self.assertEqual(stub_sa.calls, [], "未配置 key 时不得发起反查")
-        self.assertEqual(out[0][1], SAUCENAO_KEY_MISSING_TEXT)
+        self.assertEqual(stub_sa.calls, [], "未配置 key 时不得发起 SauceNAO 请求")
+        self.assertEqual(len(stub_a2d.calls), 1, "未配置 key 时仍应运行 ascii2d")
+        self.assertEqual(out[0][0], "chain")
+        text = _chain_text(out[0])
+        self.assertIn(SAUCENAO_KEY_MISSING_TEXT, text)
+        self.assertIn("ascii2d", text)
 
-    def test_search_image_url_without_api_key_hints_and_no_download(self):
-        """未配置 api_key 时，「搜图」+ 图片链接同样回 key 引导、零下载。"""
+    def test_search_image_url_without_api_key_hints_and_runs_ascii2d(self):
+        """未配置 api_key：图片链接仍会下载（供 ascii2d），跳过 SauceNAO。 [工程师已改 #12]"""
         p = make_plugin()  # 无 key
         stub_sa = _StubSaucenao()
+        stub_a2d = _StubAscii2d()
         p.saucenao = stub_sa  # type: ignore[assignment]
+        p.ascii2d = stub_a2d  # type: ignore[assignment]
         downloaded = []
 
-        async def boom_from_source(src):
+        async def fs(src):
             downloaded.append(src)
             return ImagePayload(data=PNG, mime="image/png", filename="a.png")
 
-        p.image_source.from_source = boom_from_source  # type: ignore[assignment]
+        p.image_source.from_source = fs  # type: ignore[assignment]
         out = collect(p.sou_cmd(FakeEvent(text="/搜图 http://x/a.jpg"), "http://x/a.jpg"))
-        self.assertEqual(downloaded, [])
+        self.assertEqual(downloaded, ["http://x/a.jpg"], "为运行 ascii2d，图片链接仍需下载")
         self.assertEqual(stub_sa.calls, [])
-        self.assertEqual(out[0][1], SAUCENAO_KEY_MISSING_TEXT)
+        self.assertEqual(len(stub_a2d.calls), 1)
+        self.assertEqual(out[0][0], "chain")
+        self.assertIn(SAUCENAO_KEY_MISSING_TEXT, _chain_text(out[0]))
 
     def test_search_no_args_returns_help(self):
         p = make_plugin()

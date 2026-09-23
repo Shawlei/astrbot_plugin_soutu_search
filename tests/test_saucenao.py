@@ -53,6 +53,11 @@ from astrbot_plugin_soutu_search.core.saucenao_client import (  # noqa: E402
     resolve_min_similarity,
     resolve_numres,
 )
+from astrbot_plugin_soutu_search.core.formatter import (  # noqa: E402
+    SearchResult,
+    SourceOutcome,
+)
+from astrbot_plugin_soutu_search.core.image_source import ImagePayload  # noqa: E402
 from astrbot_plugin_soutu_search.main import (  # noqa: E402
     ACCESS_DENIED_TEXT,
     HELP_TEXT,
@@ -62,6 +67,47 @@ from astrbot_plugin_soutu_search.main import (  # noqa: E402
     _command_head,
     _render_help,
 )
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+
+class _StubAscii2d:
+    """ascii2d provider 替身（避免测试触发真实联网）。"""
+
+    def __init__(self, outcome=None):
+        self.calls = []
+        self._outcome = outcome
+
+    async def search(self, image, **kw):
+        self.calls.append(kw)
+        return self._outcome or SourceOutcome(
+            results=[SearchResult(title="a2d作品", source="Pixiv", url="https://www.pixiv.net/artworks/1", score=None)]
+        )
+
+    async def close(self):
+        pass
+
+
+class _StubSaucenaoRecord:
+    """SauceNAO provider 替身（仅记录调用，用于断言「未被调用」）。"""
+
+    def __init__(self):
+        self.calls = []
+
+    async def search(self, image, **kw):
+        self.calls.append(kw)
+        return SourceOutcome(results=[SearchResult(title="sa", source="来自 pixiv 库", url="u", score=90.0)])
+
+    async def close(self):
+        pass
+
+
+def _chain_text(result):
+    """从 ``("plain", text)`` / ``("chain", comps)`` 结果中提取纯文本（便于子串断言）。"""
+    kind, payload = result
+    if kind == "plain":
+        return payload
+    return "\n".join(getattr(c, "text", "") for c in payload)
 
 
 def run(coro):
@@ -623,23 +669,31 @@ class TestSaucenaoPluginCommands(unittest.TestCase):
     def _plugin(self, cfg=None):
         return SoutuSearchPlugin(object(), cfg or {})
 
-    def test_api_key_missing_guidance_no_download(self):
-        """未配置 api_key：图片分支回 key 引导，且**零下载**。"""
-        p = self._plugin({})
-        downloaded = []
+    def test_api_key_missing_skips_saucenao_but_runs_ascii2d(self):
+        """未配置 api_key：**不再只回引导** —— 跳过 SauceNAO，但仍运行 ascii2d。 [工程师已改 #4]
 
-        async def boom_from_event(event):
-            downloaded.append("<from_event>")
-            return None
+        0.6.0 起图片分支为**双源并行**；ascii2d 无需任何 Key，故即使没配 SauceNAO key
+        也应继续反查。SauceNAO 段位置改为输出「已跳过」引导。
+        """
+        p = self._plugin({})  # 无 key
+        stub_sa = _StubSaucenaoRecord()
+        p.saucenao = stub_sa  # type: ignore[assignment]
+        stub_a2d = _StubAscii2d()
+        p.ascii2d = stub_a2d  # type: ignore[assignment]
 
-        p.image_source.from_event = boom_from_event  # type: ignore[assignment]
+        async def fe(event):
+            return ImagePayload(data=PNG, mime="image/png", filename="q.png")
+
+        p.image_source.from_event = fe  # type: ignore[assignment]
         p.image_source.has_image = lambda ev: True  # type: ignore[assignment]
         out = collect(p.sou_cmd(FakeEvent()))
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0][0], "plain")
-        self.assertEqual(out[0][1], SAUCENAO_KEY_MISSING_TEXT)
-        self.assertIn("user.php?page=search-api", out[0][1])
-        self.assertEqual(downloaded, [], "未配置 key 时绝不能下载图片")
+        self.assertEqual(stub_sa.calls, [], "未配置 key 时不得发起 SauceNAO 请求")
+        self.assertEqual(len(stub_a2d.calls), 1, "未配置 key 时仍应运行 ascii2d")
+        self.assertEqual(out[0][0], "chain")
+        text = _chain_text(out[0])
+        self.assertIn("user.php?page=search-api", text)
+        self.assertIn("跳过", text)
+        self.assertIn("ascii2d", text)
 
     def test_access_control_covers_sou_cmd(self):
         p = self._plugin({"access_mode": "whitelist", "whitelist": [], "saucenao_api_key": "k"})
@@ -752,15 +806,16 @@ class TestConfigConsistency(unittest.TestCase):
     def _schema(self):
         return json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
 
-    def test_schema_has_20_keys(self):
-        self.assertEqual(len(self._schema()), 20)
+    def test_schema_has_24_keys(self):  # [工程师已改 #1] 新增 4 项（saucenao_enable / ascii2d_*），20 -> 24
+        self.assertEqual(len(self._schema()), 24)
 
     def test_new_keys_present_with_defaults(self):
         schema = self._schema()
         self.assertEqual(schema["saucenao_api_key"]["default"], "")
         self.assertTrue(schema["saucenao_api_key"].get("secret"))
         self.assertEqual(schema["saucenao_base_url"]["default"], "https://saucenao.com")
-        self.assertEqual(schema["saucenao_db_mask"]["default"], 96)
+        # [工程师已改 #2] saucenao_db_mask 默认 96 -> 0（全部索引，推荐值；见 Part A）
+        self.assertEqual(schema["saucenao_db_mask"]["default"], 0)
         self.assertEqual(schema["saucenao_min_similarity"]["default"], 50)
         self.assertEqual(schema["saucenao_hide"]["default"], 0)
 
@@ -772,9 +827,9 @@ class TestConfigConsistency(unittest.TestCase):
         self.assertEqual(used - schema, set(), f"用了但未定义: {used - schema}")
         self.assertEqual(schema - used, set(), f"定义了但未使用: {schema - used}")
 
-    def test_db_mask_default_is_pixiv_only(self):
+    def test_db_mask_default_is_all_indexes(self):  # [工程师已改 #3] 默认由「仅 Pixiv」改为「全部索引」
         schema = self._schema()
-        self.assertEqual(schema["saucenao_db_mask"]["default"], 0x20 | 0x40)
+        self.assertEqual(schema["saucenao_db_mask"]["default"], 0)
 
 
 if __name__ == "__main__":

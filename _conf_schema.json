@@ -99,6 +99,12 @@
     "type": "string",
     "default": "https://safebooru.org"
   },
+  "saucenao_enable": {
+    "description": "启用 SauceNAO（图片反查）",
+    "hint": "「搜图」图片分支是否启用 SauceNAO。默认开启。需同时配置 saucenao_api_key 才会真正发起请求（未配置 key 时该源会被跳过，但 ascii2d 仍会运行）",
+    "type": "bool",
+    "default": true
+  },
   "saucenao_api_key": {
     "description": "SauceNAO API Key（搜图 · 以图反查）",
     "hint": "用于「搜图」的以图反查分支（对接 saucenao.com）。申请地址：https://saucenao.com/user.php?page=search-api 。未填写时「搜图」的图片分支会给出引导、不下载、不发起请求（关键词分支不受影响）",
@@ -114,9 +120,9 @@
   },
   "saucenao_db_mask": {
     "description": "SauceNAO 数据库位掩码",
-    "hint": "96 = 仅 Pixiv（0x20|0x40 = pixiv + pixivhistorical，默认）；0 = 不限库（搜全部）。可自行相加常用库：pixiv=32、pixivhistorical=64、danbooru=512、yande.re=4096、Twitter=0x10000000000。非法/负数将回退为 96",
+    "hint": "默认 0 = 全部索引（不发送 dbmask，服务端按 #999 全部处理）——推荐。⚠️ 旧的默认 96（= pixiv + pixivhistorical）会锁死在 Pixiv 系：pixivhistorical 是「老图快照库」，容易只搜出 2018 年以前的老图。⚠️ Twitter(#41)=0x10000000000 已于 2019-12 停更，加了它等于加一个死库，不建议再用于找近期图。常用掩码（十六进制相加后转十进制）：pixiv=0x20(32)、pixivhistorical=0x40(64)、danbooru=0x200(512)、yande.re=0x1000(4096)、gelbooru=0x1000000、konachan=0x2000000、anime-pictures=0x8000000、deviantArt=0x200000000、ArtStation=0x4000000000、Skeb=0x80000000000。例：仅 Pixiv=96；Pixiv+活跃 booru 可用 0（全部）。非法/负数将回退为 96",
     "type": "int",
-    "default": 96
+    "default": 0
   },
   "saucenao_min_similarity": {
     "description": "SauceNAO 最低相似度（%）",
@@ -139,6 +145,24 @@
       "max": 3,
       "step": 1
     }
+  },
+  "ascii2d_enable": {
+    "description": "启用 ascii2d（图片反查）",
+    "hint": "「搜图」图片分支是否启用 ascii2d。默认开启。ascii2d 覆盖 Pixiv/Twitter 等画师首发站，对近期图更有效，且**不需要任何 API Key**；需能访问 ascii2d.net（日本站点，大陆可能需要代理）",
+    "type": "bool",
+    "default": true
+  },
+  "ascii2d_base_url": {
+    "description": "ascii2d 接口地址",
+    "hint": "一般无需修改。默认 https://ascii2d.net；若你自建了镜像/反代，可改填此处（AstrBot 有全局 http_proxy 配置可用）",
+    "type": "string",
+    "default": "https://ascii2d.net"
+  },
+  "ascii2d_bovw": {
+    "description": "ascii2d 特征检索模式（bovw）",
+    "hint": "false=色彩检索（默认，推荐）；true=特征检索（bovw），对**裁剪过/旋转过/色调不同**的图更有效，但会**多消耗一次请求**且更慢。默认关闭",
+    "type": "bool",
+    "default": false
   },
   "access_mode": {
     "description": "访问控制模式",

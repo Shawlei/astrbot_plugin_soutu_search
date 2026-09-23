@@ -46,6 +46,7 @@ from astrbot_plugin_soutu_search.core.saucenao_client import (  # noqa: E402
     resolve_hide,
     resolve_min_similarity,
 )
+from astrbot_plugin_soutu_search.core.image_source import ImagePayload  # noqa: E402
 from astrbot_plugin_soutu_search.main import (  # noqa: E402
     ACCESS_DENIED_TEXT,
     HELP_TEXT,
@@ -65,6 +66,30 @@ async def _collect(agen):
 
 def collect(agen):
     return run(_collect(agen))
+
+
+def _text_of(result) -> str:
+    """从 ``("plain", text)`` / ``("chain", comps)`` 结果中提取纯文本。"""
+    kind, payload = result
+    if kind == "plain":
+        return payload
+    return "\n".join(getattr(c, "text", "") for c in payload)
+
+
+class _StubAscii2dRecord:
+    """ascii2d provider 替身（仅记录调用，避免测试触发真实联网）。"""
+
+    def __init__(self):
+        self.calls = []
+
+    async def search(self, image, **kw):
+        self.calls.append(kw)
+        return SourceOutcome(
+            results=[SearchResult(title="a2d", source="Pixiv", url="https://www.pixiv.net/artworks/1", score=None)]
+        )
+
+    async def close(self):
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -435,11 +460,12 @@ class TestMaskAndConfig(unittest.TestCase):
         for ok in (0, 1, 2, 3):
             self.assertEqual(resolve_hide(ok), ok)
 
-    def test_plugin_config_20_keys(self):
+    def test_plugin_config_24_keys(self):  # [工程师已改 #6] 新增 4 项，20 -> 24
         schema = json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-        self.assertEqual(len(schema), 20)
+        self.assertEqual(len(schema), 24)
         for k in ("saucenao_api_key", "saucenao_base_url", "saucenao_db_mask",
-                  "saucenao_min_similarity", "saucenao_hide"):
+                  "saucenao_min_similarity", "saucenao_hide",
+                  "saucenao_enable", "ascii2d_enable", "ascii2d_base_url", "ascii2d_bovw"):
             self.assertIn(k, schema)
 
     def test_plugin_defaults_and_override(self):
@@ -509,22 +535,25 @@ class _FakeEvent:
 
 
 class TestApiKeyMissingNoRequest(unittest.TestCase):
-    def test_no_network_and_no_download_when_key_missing(self):
+    def test_skip_saucenao_but_ascii2d_runs_when_key_missing(self):
+        """未配置 api_key：不发 SauceNAO 请求，但 ascii2d 仍运行。 [工程师已改 #7]"""
         p = SoutuSearchPlugin(object(), {})  # 无 key
         spy = RecordingSession()
         p.saucenao._session = spy
-        downloaded = []
+        a2d = _StubAscii2dRecord()
+        p.ascii2d = a2d  # type: ignore[assignment]
 
-        async def boom_from_event(event):
-            downloaded.append("<from_event>")
-            return None
+        async def fe(event):
+            return ImagePayload(data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 16, mime="image/png", filename="q.png")
 
-        p.image_source.from_event = boom_from_event  # type: ignore[assignment]
+        p.image_source.from_event = fe  # type: ignore[assignment]
         p.image_source.has_image = lambda ev: True  # type: ignore[assignment]
         out = collect(p.sou_cmd(_FakeEvent()))
-        self.assertEqual(out[0][1], SAUCENAO_KEY_MISSING_TEXT)
-        self.assertEqual(len(spy.calls), 0, "未配置 api_key 时绝不能发出网络请求")
-        self.assertEqual(downloaded, [], "未配置 api_key 时绝不能下载图片")
+        self.assertEqual(len(spy.calls), 0, "未配置 api_key 时绝不能发出 SauceNAO 网络请求")
+        self.assertEqual(len(a2d.calls), 1, "未配置 key 时 ascii2d 仍应运行")
+        text = _text_of(out[0])
+        self.assertIn("跳过", text)
+        self.assertIn("ascii2d", text)
 
 
 # ===========================================================================

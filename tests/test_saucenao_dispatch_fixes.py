@@ -147,6 +147,27 @@ class _StubBooru:
         pass
 
 
+class _StubAscii2d:
+    """ascii2d provider 替身（避免测试触发真实联网）。"""
+
+    def __init__(self):
+        self.calls = []
+
+    async def search(self, image, **kw):
+        self.calls.append(kw)
+        return _outcome()
+
+    async def close(self):
+        pass
+
+
+def _chain_text(result) -> str:
+    kind, payload = result
+    if kind == "plain":
+        return payload
+    return "\n".join(getattr(c, "text", "") for c in payload)
+
+
 # ===========================================================================
 # P2-1：图片直链真正被处理
 # ===========================================================================
@@ -165,11 +186,14 @@ class TestImageUrlDispatch(unittest.TestCase):
         calls = []
         p = self._plugin_with_source(calls)
         stub = _StubSaucenao()
+        stub_a2d = _StubAscii2d()
         p.saucenao = stub  # type: ignore[assignment]
+        p.ascii2d = stub_a2d  # type: ignore[assignment]
         ev = FakeEvent(text="/搜图 http://x/a.jpg")
         out = collect(p.sou_cmd(ev, args="http://x/a.jpg"))
         self.assertEqual(calls, ["http://x/a.jpg"], "应通过 from_source 下载该链接")
-        self.assertEqual(len(stub.calls), 1, "下载成功后应发起一次反查")
+        self.assertEqual(len(stub.calls), 1, "下载成功后应发起一次 SauceNAO 反查")
+        self.assertEqual(len(stub_a2d.calls), 1, "双源并行走 SauceNAO 的同时也应走 ascii2d")
         self.assertEqual(out[0][0], "chain", "有结果应返回消息链，而非用法提示")
 
     def test_search_url_fetch_failure_gives_readable_message(self):
@@ -227,8 +251,11 @@ class TestImageUrlDispatch(unittest.TestCase):
         self.assertEqual(stub.calls, ["cat"], "非 URL 文本仍走关键词搜图")
         self.assertEqual(out[0][0], "chain")
 
-    def test_search_url_without_key_is_not_downloaded_but_hinted(self):
-        """「搜图」收到图片直链但**未配置 key** → 回 key 引导，**不下载**（省带宽 + 收敛 SSRF 面）。"""
+    def test_search_url_without_key_skips_saucenao_but_runs_ascii2d(self):
+        """「搜图」收到图片直链但**未配置 key**：跳过 SauceNAO，但仍下载并运行 ascii2d。 [工程师已改 #13]
+
+        0.6.0 起 ascii2d 无需 Key，故即使没配 SauceNAO key 也应继续反查（需下载图片）。
+        """
         calls = []
         p = SoutuSearchPlugin(object(), {})  # 无 api_key
 
@@ -240,15 +267,19 @@ class TestImageUrlDispatch(unittest.TestCase):
         stub_soutu = _StubSoutu()
         stub_booru = _StubBooru()
         stub_sa = _StubSaucenao()
+        stub_a2d = _StubAscii2d()
         p.soutu = stub_soutu  # type: ignore[assignment]
         p.booru = stub_booru  # type: ignore[assignment]
         p.saucenao = stub_sa  # type: ignore[assignment]
+        p.ascii2d = stub_a2d  # type: ignore[assignment]
         out = collect(p.sou_cmd(FakeEvent(text="/搜图 http://x/a.jpg"), args="http://x/a.jpg"))
-        self.assertEqual(calls, [], "未配置 key 时不得下载图片链接")
+        self.assertEqual(calls, ["http://x/a.jpg"], "为运行 ascii2d 需下载图片链接")
         self.assertEqual(stub_soutu.calls, [], "不得走以图搜图")
         self.assertEqual(stub_booru.calls, [], "不得把 URL 当关键词搜")
         self.assertEqual(stub_sa.calls, [], "不得发起 SauceNAO 请求")
-        self.assertEqual(out[0][1], SAUCENAO_KEY_MISSING_TEXT)
+        self.assertEqual(len(stub_a2d.calls), 1, "未配置 key 时仍应运行 ascii2d")
+        self.assertEqual(out[0][0], "chain")
+        self.assertIn(SAUCENAO_KEY_MISSING_TEXT, _chain_text(out[0]))
 
     def test_help_text_claims_image_url_support(self):
         # 帮助文案宣称支持图片链接（现在确已实现）

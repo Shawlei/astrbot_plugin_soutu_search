@@ -3,7 +3,7 @@
 为 [AstrBot](https://github.com/Soulter/AstrBot) 提供搜图能力，**两条指令、各司其职**：
 
 - **搜本（以图搜本子）**：发送图片并用「搜本」指令 → 调用 [soutubot.moe](https://soutubot.moe)（搜图Bot酱）做相似图检索。**只接受图片**
-- **搜图（自动判别）**：有图片（或图片链接）→ 调用 [SauceNAO](https://saucenao.com) 反查图片出处/画师（**默认仅检索 Pixiv 库**）；纯关键词 → 调用 [Safebooru](https://safebooru.org) DAPI 按标签检索
+- **搜图（自动判别）**：有图片（或图片链接）→ **双源并行**反查出处（[SauceNAO](https://saucenao.com) + [ascii2d](https://ascii2d.net)；SauceNAO 需 API Key、默认检索全部活跃库，ascii2d 免 Key）；纯关键词 → 调用 [Safebooru](https://safebooru.org) DAPI 按标签检索
 
 > 默认采用「**只回文字与来源链接、不发送缩略图**」的安全策略，避免在群聊中触发平台风控。
 > 搜图**只能通过指令触发**：插件**不监听消息、不会自动搜图**，群内有人发图不会被自动识别。
@@ -39,14 +39,16 @@
 |---|---|---|---|
 | `命令前缀 + 搜本` | `搜本子`、`soutu`、`找图` | **以图搜本子**（soutubot.moe，搜图Bot酱） | **只接受图片**：消息图片 / 引用图片 / `搜本 <图片链接>` |
 | `命令前缀 + 搜本帮助` | `搜本help`、`soutuhelp` | 输出「搜本」用法说明 | — |
-| `命令前缀 + 搜图` | `pixiv`、`saucenao` | **自动判别**：有图片/图片链接 → **SauceNAO 反查 P 站出处**（默认仅 Pixiv 库，需配置 API Key）；纯关键词 → **Safebooru 关键词搜图** | 图片 / 引用图片 / `搜图 <图片链接>` / `搜图 <关键词>` |
+| `命令前缀 + 搜图` | `pixiv`、`saucenao` | **自动判别**：有图片/图片链接 → **SauceNAO + ascii2d 双源并行反查出处**（SauceNAO 需 API Key、默认检索全部活跃库；ascii2d 免 Key）；纯关键词 → **Safebooru 关键词搜图** | 图片 / 引用图片 / `搜图 <图片链接>` / `搜图 <关键词>` |
 | `命令前缀 + 搜图帮助` | `搜图help`、`pixivhelp`、`saucenaohelp` | 输出「搜图」用法说明（含两条路） | — |
 
-- 两条指令**各司其职**：`搜本` 只以图搜图（soutubot），`搜图` 有图反查 P 站、无图则按关键词搜图。
+- 两条指令**各司其职**：`搜本` 只以图搜图（soutubot），`搜图` 有图**双源反查**、无图则按关键词搜图。
 - 搜图**只能通过指令触发**：单纯发图片（不带指令）**不会**搜索（插件不监听消息）。
 - `/搜本` 不带图片（也无图片链接）时：纯关键词会回一句「只支持图片」的引导、**不发起任何搜索**；完全无参数则回「搜本帮助」。
-- `/搜图` **自动判别**：有图片 / 图片链接 → SauceNAO 反查；纯关键词 → Safebooru。未配置 `saucenao_api_key` 时，
-  图片分支会**先回一条引导再返回**，**不会下载图片**（省带宽、省配额）；关键词分支**不需要** API Key，仍可正常使用。
+- `/搜图` **自动判别**：有图片 / 图片链接 → **双源并行**反查（SauceNAO 段 + ascii2d 段）；纯关键词 → Safebooru。
+  未配置 `saucenao_api_key` 时，**不再整条跳过** —— SauceNAO 段给出引导，但 ascii2d **照常运行**（ascii2d 免 Key）；
+  两个源都可在配置中单独开关（`saucenao_enable` / `ascii2d_enable`），都关时会回一句明确的配置提示。
+  关键词分支**不需要**任何 API Key，仍可正常使用。
 - 文本式子帮助：任一指令后跟 `帮助` / `help` / `-h` / `--help` / `用法` 也会输出对应帮助（如 `/搜本 帮助`）。
 
 > **⚠️ 破坏性变更（0.5.0）**：`搜P站` 与 `搜P站帮助` 两条指令**已移除**，其能力并入 `搜图`：
@@ -85,19 +87,24 @@
 | `safebooru_rating` | string(`safe`/`all`) | `safe` | 关键词搜图评级过滤 |
 | `soutu_base_url` | string | `https://soutubot.moe` | 以图搜图服务地址 |
 | `safebooru_base_url` | string | `https://safebooru.org` | 关键词搜图服务地址 |
-| `saucenao_api_key` | string（`secret`） | `""` | **搜图（以图反查）** 的 SauceNAO API Key（申请：<https://saucenao.com/user.php?page=search-api>）。未填写时 `搜图` 的图片分支给出引导、不下载、不发起请求；关键词分支不需要 |
+| `saucenao_enable` | bool | `true` | 图片反查时是否启用 SauceNAO |
+| `saucenao_api_key` | string（`secret`） | `""` | **搜图（以图反查）** 的 SauceNAO API Key（申请：<https://saucenao.com/user.php?page=search-api>）。未填写时仅**跳过 SauceNAO**（该段给引导），ascii2d 仍照常运行；关键词分支不需要 |
 | `saucenao_base_url` | string | `https://saucenao.com` | SauceNAO 接口地址，可改镜像/反代以应对网络问题 |
-| `saucenao_db_mask` | int | `96` | 数据库位掩码。**`96` = 仅 Pixiv**（`0x20|0x40`）；`0` = 不限库（搜全部） |
+| `saucenao_db_mask` | int | `0` | 数据库位掩码。**`0` = 全部索引（推荐，默认）**；`96` = 仅 Pixiv（旧默认，易只搜出老图）。详见下文「`dbmask` 用法」 |
 | `saucenao_min_similarity` | int | `50` | SauceNAO 最低相似度（0-100）；与 soutubot 的 `min_score` 体系不同，故独立配置 |
 | `saucenao_hide` | int | `0` | SauceNAO 内容过滤：`0`=全显示、`1`=隐藏预期 R18、`2`=隐藏预期可疑、`3`=只留安全 |
+| `ascii2d_enable` | bool | `true` | 图片反查时是否启用 ascii2d（免 Key，覆盖 Pixiv/Twitter 等画师首发站） |
+| `ascii2d_base_url` | string | `https://ascii2d.net` | ascii2d 接口地址，可改镜像/反代 |
+| `ascii2d_bovw` | bool | `false` | ascii2d 特征检索模式（对裁剪/旋转/色调不同的图更有效，但多消耗一次请求且更慢） |
 | `access_mode` | string(`all`/`whitelist`/`blacklist`) | `all` | 访问控制模式（详见下方「访问控制」） |
 | `whitelist` | list | `[]` | 白名单：允许使用本插件的会话/群（**空列表 = 全部拒绝**） |
 | `blacklist` | list | `[]` | 黑名单：禁止使用本插件的会话/群（**空列表 = 不限制**） |
 | `extra_allowed_roots` | list | `[]` | 额外允许读取的本地图片根目录（一般无需填写，仅应对 AstrBot 版本差异导致的临时目录变化） |
 
-> 共 **20** 项配置。命令前缀不在本插件配置中，而是跟随 AstrBot 全局 `wake_prefix`。
-> `saucenao_db_mask` 非法值（负数/非整数）回退 `96`；`saucenao_min_similarity` 越界回退 `50`；
-> `saucenao_hide` 不在 0-3 回退 `0`。
+> 共 **24** 项配置。命令前缀不在本插件配置中，而是跟随 AstrBot 全局 `wake_prefix`。
+> `saucenao_db_mask` 非法值（负数/非整数）回退 `96`（保守的 Pixiv 限定，**刻意不退回 `0`**，
+> 以免非法值被静默当成「搜全部」）；`saucenao_min_similarity` 越界回退 `50`；
+> `saucenao_hide` 不在 0-3 回退 `0`；`ascii2d_base_url` 为空回退官方站点。
 
 ### 🚦 访问控制
 

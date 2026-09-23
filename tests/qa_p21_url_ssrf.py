@@ -268,7 +268,7 @@ print("     text:", o2[0][1].replace("\n", " / ")[:90])
 
 
 # --------------------------------------------------------------------------- #
-hr("F. 【0.5.0】搜图自动判别：图片→SauceNAO；关键词→Safebooru；无 key 图片分支零下载")
+hr("F. 【0.6.0】搜图自动判别：图片→双源反查(SauceNAO+ascii2d)；关键词→Safebooru")
 # --------------------------------------------------------------------------- #
 
 # F1. 有 key + 消息带图片 -> SauceNAO，且不碰 booru/soutu
@@ -321,7 +321,7 @@ ok3 = stub_booru3.calls == ["cat_ears"] and not stub_sa3.calls and not stub_sout
 print(f"  {'OK ' if ok3 else '>>> GAP'}  搜图+关键词 -> booru={stub_booru3.calls} "
       f"saucenao={len(stub_sa3.calls)} soutu={len(stub_soutu3.calls)} 首块={out3[0][0]}")
 
-# F4. 无 key + 图片 -> 回 key 引导，零下载
+# F4. 无 key + 图片 -> 跳过 SauceNAO，但运行 ascii2d（0.6.0 起双源并行，ascii2d 免 key）
 p4 = make_plugin()  # 无 key
 dl4 = []
 
@@ -339,8 +339,9 @@ async def fs4(url):
 p4.image_source.from_event = fe_img4
 p4.image_source.from_source = fs4
 out4 = run(collect(p4.sou_cmd(FakeEvent("/搜图", with_image=True), "")))
-ok4 = out4[0][1] == SAUCENAO_KEY_MISSING_TEXT and not dl4
-print(f"  {'OK ' if ok4 else '>>> GAP'}  搜图+图片(无key) -> 回key引导={out4[0][1] == SAUCENAO_KEY_MISSING_TEXT} 下载={dl4}")
+text4 = "\n".join(getattr(c, "text", "") for c in out4[0][1]) if out4[0][0] == "chain" else out4[0][1]
+ok4 = SAUCENAO_KEY_MISSING_TEXT in text4 and len(dl4) == 1
+print(f"  {'OK ' if ok4 else '>>> GAP'}  搜图+图片(无key) -> 跳过SauceNAO引导={SAUCENAO_KEY_MISSING_TEXT in text4} 下载={dl4}")
 
 # F5. 无 key + 关键词 -> 仍可关键词搜图
 p5 = make_plugin()  # 无 key

@@ -31,6 +31,14 @@ def make_saucenao_key(data: bytes) -> str:
     return "snao:" + sha256_hex(data)
 
 
+def make_ascii2d_key(data: bytes, *, bovw: bool = False) -> str:
+    """ascii2d 反查的缓存键（**独立命名空间**，避免与 soutubot / SauceNAO 互相污染）。
+
+    把 ``bovw`` 纳入键：特征检索模式与色彩检索模式的结果不同，不能互相命中。
+    """
+    return ("a2d-bovw:" if bovw else "a2d:") + sha256_hex(data)
+
+
 def make_tags_key(tags: str, *, rating: str = "safe", limit: int = 3, page: int = 0) -> str:
     """以关键词 + 过滤参数构造缓存键。"""
     normalized = " ".join(str(tags).split()).strip().lower()

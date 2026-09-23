@@ -58,8 +58,20 @@ DB_H_MISC_EHENTAI = 0x2000000000  # #38 H-Misc (ehentai)
 DB_TWITTER = 0x10000000000  # #41 Twitter
 DB_SKEB = 0x80000000000  # #44 Skeb
 
-# 仅 Pixiv + PixivHistorical —— 即本插件「搜 P 站」的默认掩码
-DEFAULT_DB_MASK = DB_PIXIV | DB_PIXIV_HISTORICAL  # == 0x60 == 96
+# 仅 Pixiv + PixivHistorical —— 作为「**非法值回退**」的**保守默认**（见下方说明）。
+#
+# ⚠️ 注意区分两个「默认」：
+# 1. **schema 默认**（用户未改动时实际生效）：``SCHEMA_DEFAULT_DB_MASK = 0`` =
+#    全部索引（不发送 dbmask，服务端按 #999 全部处理）。这是**推荐值**：
+#    pixiv(#5) 对近期图常无命中，而 pixivhistorical(#6) 是老图快照库，锁死在 96
+#    会让用户「只搜出 2018 年以前的老图」。
+# 2. **非法值回退**（用户填了负数 / 非整数时）：保守回退到 ``0x60``(96) 这个
+#    「Pixiv 限定」。**刻意不退回 ``0``** —— ``0`` 在语义上是「全部」，若把非法值静默
+#    变成「搜全部」会放大部分用户的意外行为；回退到保守的 Pixiv 限定更可控。
+DEFAULT_DB_MASK = DB_PIXIV | DB_PIXIV_HISTORICAL  # == 0x60 == 96（非法值回退用）
+
+# schema / 配置的**推荐默认**：0 = 全部索引（不发送 dbmask 参数）
+SCHEMA_DEFAULT_DB_MASK = 0
 
 DEFAULT_MIN_SIMILARITY = 50  # SauceNAO 相似度体系 0-100（独立于 soutubot 的 min_score）
 DEFAULT_HIDE = 0  # 0=全显示 1=隐藏预期 R18 2=隐藏预期可疑 3=只留安全
@@ -171,7 +183,13 @@ def resolve_db_mask(value: Any, default: int = DEFAULT_DB_MASK) -> int:
 
     - 合法非负整数（含 ``"96"`` / ``"0x60"`` / ``96.0``）→ 原值；
     - ``0`` 合法（表示不限库，搜全部）；
-    - 负数 / 布尔 / 非整数 / 非数值字符串 / ``None`` → 回退 ``default``（默认 ``96``）。
+    - 负数 / 布尔 / 非整数 / 非数值字符串 / ``None`` → 回退 ``default``
+      （默认 ``96``，即**保守的 Pixiv 限定**）。
+
+    .. note::
+       非法值**刻意不退回 ``0``**：``0`` 在语义上是「全部索引」，若把非法值静默变成
+       「搜全部」会放大部分用户的意外行为。故非法值回退到 ``0x60``(96) 这个保守值；
+       真正「搜全部」请显式配置 ``saucenao_db_mask=0``（也是 schema 的推荐默认）。
     """
     parsed = _coerce_int(value)
     if parsed is None or parsed < 0:
