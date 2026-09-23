@@ -7,6 +7,9 @@ __pycache__/
 # 测试桩曾误建的垃圾目录（见 tests/test_core.py 的 StarTools 说明）
 MagicMock/
 
+# QA 脚本运行期生成的临时图片目录（tests/qa_access_attack.py 等）
+tests/qa_img_*/
+
 # 虚拟环境
 .venv/
 venv/
