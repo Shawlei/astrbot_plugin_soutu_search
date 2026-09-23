@@ -441,32 +441,38 @@ class TestRedirectSafety(unittest.TestCase):
 class TestCommandPrecision(unittest.TestCase):
     def test_should_be_command(self):
         for t in ("/搜图", "/搜图cat", "/搜图http://x", "搜图帮助x", "/soutuhelp",
-                  "。搜图 x", "!找图", "搜图 cat"):
+                  "。搜图 x", "!找图", "搜图 cat",
+                  "/搜本", "/搜本子", "/搜本 猫娘", "/搜本 http://a.com/x.jpg",
+                  "/搜本帮助", "/soutu 猫娘"):
             self.assertTrue(_command_head(t) is not None, f"应识别为指令: {t!r}")
 
     def test_should_not_be_command(self):
         for t in ("搜图真有意思", "soutubot很棒", "找图…", "搜图帮助…",
-                  "普通聊天", "帮我搜图", "搜索图片", "/其它指令"):
+                  "普通聊天", "帮我搜图", "搜索图片", "/其它指令",
+                  "搜本真好看", "搜本子真好看"):
             self.assertFalse(_command_head(t) is not None, f"不应识别为指令: {t!r}")
 
     def test_cjk_keyword_args_are_commands(self):
         """回归：带中文关键词参数（空白分隔）的指令必须被识别。"""
         for t in ("/搜图 初音未来", "/搜图 甘雨", "/找图 蔚蓝档案", "搜图 初音未来",
                   "/搜图  双空格中文", "/搜图 中文关键词 https://x.com/a.jpg",
-                  "/搜图 http://a.com/x.jpg"):
+                  "/搜图 http://a.com/x.jpg",
+                  "/搜本 猫娘", "/搜本 猫娘 白丝", "/soutu 猫娘"):
             self.assertTrue(_command_head(t) is not None, f"应识别为指令: {t!r}")
 
     def test_acceptance_table(self):
-        """team-lead 验收表逐条核对。"""
+        """team-lead 验收表逐条核对（0.4.0 起含「搜本」拆分支）。"""
         expect_true = [
             "/搜图", "/搜图cat", "/soutuhelp", "搜图帮助x", "。搜图 x", "!找图",
             "/搜图 http://a.com/x.jpg",
             "/搜图 初音未来", "/搜图 甘雨", "/找图 蔚蓝档案", "搜图 初音未来", "/搜图  双空格中文",
             "/搜图 中文关键词 https://x.com/a.jpg",
+            "/搜本", "/搜本子", "/搜本 猫娘", "/搜本 http://a.com/x.jpg",
+            "/搜本帮助", "/soutu 猫娘",
         ]
         expect_false = [
             "搜图真有意思", "soutubot很棒", "普通聊天", "帮我搜图", "搜索图片", "/其它指令",
-            "搜图帮助…", "找图…",
+            "搜图帮助…", "找图…", "搜本真好看", "搜本子真好看",
         ]
         for t in expect_true:
             self.assertTrue(_command_head(t) is not None, f"[验收] 应为 True: {t!r}")

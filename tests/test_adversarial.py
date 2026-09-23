@@ -466,10 +466,13 @@ class TestCacheAndCooldown(unittest.TestCase):
             return E()
 
         true_cases = ["/搜图", "/搜图 cat", "搜图", "。搜图 x", "/找图 y",
-                      "/soutu z", "/搜图帮助", "!搜图"]
+                      "/soutu z", "/搜图帮助", "!搜图",
+                      "/搜本", "/搜本子", "/搜本 猫娘", "/soutu 猫娘",
+                      "/搜本 http://a.com/x.jpg", "/搜本帮助", "/soutuhelp"]
         for t in true_cases:
             self.assertTrue(_command_head(t) is not None, f"应识别为指令: {t!r}")
-        false_cases = ["普通聊天", "帮我搜图", "/其它指令"]
+        false_cases = ["普通聊天", "帮我搜图", "/其它指令",
+                       "搜本真好看", "搜本子真好看"]
         for t in false_cases:
             self.assertFalse(_command_head(t) is not None, f"不应识别为指令: {t!r}")
 

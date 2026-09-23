@@ -613,6 +613,17 @@ class ImageSource:
             raw = getattr(event, "message", None)
         return list(_flatten_components(raw))
 
+    def has_image(self, event) -> bool:
+        """判断事件消息中是否**含图片组件**（含引用回复内的图片）。
+
+        只做**结构检测**：展平消息组件、看是否存在图片组件；**不下载、不读盘、不校验**，
+        供「搜图」这类不接受图片的指令在**发起任何网络请求前**快速回引导提示。
+        """
+        try:
+            return bool(self._event_components(event))
+        except Exception:  # noqa: BLE001 - 结构异常一律视为「无图」，交由指令侧兜底
+            return False
+
     async def from_event(self, event) -> ImagePayload | None:
         """从消息事件中提取第一张可用图片，取不到返回 ``None``。"""
         for comp in self._event_components(event):

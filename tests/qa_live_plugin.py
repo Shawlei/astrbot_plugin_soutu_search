@@ -1,6 +1,7 @@
-"""QA 联网端到端：驱动插件 ``sou_cmd`` 指令走完整链路（访问控制放行 → 取图 → 搜索 → 回复）。
+"""QA 联网端到端：驱动插件 ``book_cmd``（「搜本」）指令走完整链路（访问控制放行 → 取图 → 搜索 → 回复）。
 
 使用 recon/test.jpg 的 data URI 作为图片来源，避免依赖 QQ 图床；真实访问 soutubot.moe。
+（自 0.4.0 起 soutubot 以图搜图只由「搜本」触发，故本探针驱动 ``book_cmd``。）
 运行::
     python tests/qa_live_plugin.py
 """
@@ -26,7 +27,7 @@ DATA_URI = "data:image/jpeg;base64," + base64.b64encode(TEST_IMG.read_bytes()).d
 
 
 class Ev:
-    def __init__(self, umo, text="/搜图"):
+    def __init__(self, umo, text="/搜本"):
         self.unified_msg_origin = umo
         self.message_str = text
         self.message_obj = type("M", (), {"group_id": None, "message_id": "m1"})()
@@ -57,7 +58,7 @@ async def main():
 
     p.image_source.from_event = fake_from_event  # type: ignore
 
-    out_allowed = [x async for x in p.sou_cmd(Ev("umo-A"), "")]
+    out_allowed = [x async for x in p.book_cmd(Ev("umo-A"), "")]
     print(f"[放行会话] 输出条数={len(out_allowed)}")
     if out_allowed:
         blocks = out_allowed[0]
@@ -71,7 +72,7 @@ async def main():
         print("  !!! 放行会话未产出任何回复（可能搜索失败或无命中）")
 
     # 受限会话（白名单外）→ 恰好一条拒绝提示
-    out_denied = [x async for x in p.sou_cmd(Ev("umo-B"), "")]
+    out_denied = [x async for x in p.book_cmd(Ev("umo-B"), "")]
     denied_ok = len(out_denied) == 1 and out_denied[0][1] == ACCESS_DENIED_TEXT
     print(f"[受限会话] 输出条数={len(out_denied)}（期望 1，且为拒绝提示={denied_ok}）")
 

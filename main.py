@@ -1,13 +1,16 @@
 """AstrBot 搜图插件（astrbot_plugin_soutu_search）
 
-三种能力：
-1. **以图搜图** → 上传图片调用 soutubot.moe 做相似检索。
-2. **关键词搜图** → 调用 Safebooru DAPI 按标签检索。
-3. **搜 P 站（SauceNAO 反查）** → 上传图片调用 SauceNAO，可限定 Pixiv 库反查出处/画师。
+三种能力，**各自独立指令、互斥触发**（不再由一个指令自动判别）：
+1. **以图搜本子** → ``<前缀>搜本``（别名 ``搜本子`` / ``soutu`` / ``找图``）上传图片调用
+   soutubot.moe（搜图Bot酱）做相似检索。**只接受图片**（消息图片 / 引用图片 / 图片直链）。
+2. **关键词搜图** → ``<前缀>搜图`` 调用 Safebooru DAPI 按标签检索。**只接受关键词**，
+   明确**不接受图片**（收到图片 / 图片直链时回引导提示，不下载、不搜索）。
+3. **搜 P 站（SauceNAO 反查）** → ``<前缀>搜P站``（别名 ``pixiv`` / ``saucenao``）上传图片
+   调用 SauceNAO，可限定 Pixiv 库反查出处/画师（需配置 API Key）。
+
+帮助指令：``搜本帮助`` / ``搜图帮助`` / ``搜P站帮助``（各有英文别名，见 ``_COMMAND_NAMES``）。
 
 触发方式（**仅指令触发**）：
-- ``<前缀>搜图``（附图 = 以图搜图；带文本 = 关键词搜图），``<前缀>搜图帮助`` 查看用法。
-- ``<前缀>搜P站``（别名 ``pixiv`` / ``saucenao``）：SauceNAO 反查（需配置 API Key）。
 - 前缀跟随 AstrBot 全局配置的命令前缀（顶层 ``wake_prefix``，默认 ``/``）。
 - **不监听消息、不会自动搜图**：只有显式发送指令才会触发，杜绝被动打扰。
 
@@ -40,20 +43,20 @@ from .core.soutu_client import SoutuClient
 
 PLUGIN_NAME = "astrbot_plugin_soutu_search"
 
-# 指令名，**长的 / 更具体的在前**（保证 `搜图帮助x` 先匹配到 `搜图帮助`，rest 才是 `x`）。
+# 指令名，**长的 / 更具体的在前**，且**帮助类必须排在各自本体之前**。
+# 注意「搜本子」必须排在「搜本」之前：否则「搜本子」会被「搜本」抢先匹配，
+# rest="子" 是 CJK → 被判为人话连读 → 指令失效。
 _COMMAND_NAMES = (
-    "搜图帮助",
-    "搜图help",
-    "soutuhelp",
-    "搜P站帮助",
-    "搜P站help",
-    "saucenaohelp",
-    "搜P站",
-    "saucenao",
-    "pixiv",
+    # 帮助类必须排在各自本体之前
+    "搜本帮助", "搜本help", "soutuhelp",
+    "搜图帮助", "搜图help",
+    "搜P站帮助", "搜P站help", "saucenaohelp",
+    # "搜本子" 必须排在 "搜本" 之前（否则 "搜本子" 会被 "搜本" 抢先匹配，
+    # rest="子" 是 CJK → 被判为人话连读 → 指令失效）
+    "搜本子",
+    "搜P站", "saucenao", "pixiv",
+    "搜本", "soutu", "找图",
     "搜图",
-    "找图",
-    "soutu",
 )
 
 # 默认命令前缀（AstrBot 全局配置顶层 wake_prefix 的兜底值）
@@ -92,6 +95,20 @@ SAUCENAO_NO_IMAGE_TEXT = (
 IMAGE_URL_FETCH_FAIL_TEXT = (
     "😥 无法获取图片链接：{err}\n"
     "请确认它是可直接访问的图片直链（支持 http/https，且非内网地址），或改用「引用图片」的方式。"
+)
+
+# 「搜本」收到纯关键词时的引导（soutubot 只支持以图搜图）
+BOOK_KEYWORD_NOT_SUPPORTED_TEXT = (
+    "📕 「搜本」是**以图搜本子**（搜图Bot酱），只支持图片，不支持关键词。\n"
+    "· 关键词搜图请用 `{p}搜图 <关键词>`\n"
+    "· 反查 P 站出处请用 `{p}搜P站`"
+)
+
+# 「搜图」收到图片/图片链接时的引导（搜图只做关键词）
+IMAGE_NOT_SUPPORTED_TEXT = (
+    "🔍 「搜图」只做**关键词搜图**（Safebooru），不接受图片。\n"
+    "· 以图搜本子请用 `{p}搜本`\n"
+    "· 反查 P 站出处请用 `{p}搜P站`"
 )
 
 
@@ -169,27 +186,62 @@ def _command_head(text: str, prefixes=None) -> str | None:
     return None
 
 
-_HELP_TEMPLATE = """📖 搜图插件用法
+def _prefix_or_default(prefix) -> str:
+    """帮助 / 引导文案使用的命令前缀：非法或为空时回退 ``DEFAULT_WAKE_PREFIX``。"""
+    return prefix if isinstance(prefix, str) and prefix else DEFAULT_WAKE_PREFIX
 
-① 以图搜图：发送图片并附带 `{p}搜图`
-   · 支持引用一张图片后发送 `{p}搜图`
-   · 支持直接用 `{p}搜图 <图片链接>`
-② 关键词搜图：`{p}搜图 <关键词>`，例如 `{p}搜图 cat_ears`
-③ 搜 P 站（SauceNAO 反查，别名 `pixiv` / `saucenao`）：发送图片并附带 `{p}搜P站`
-   · 支持引用图片 / 图片链接 · 需先在插件配置中填写 `saucenao_api_key`
-④ 查看帮助：`{p}搜图帮助`（SauceNAO 用法：`{p}搜P站帮助`）
 
-说明：搜图**只能通过指令触发**，群内有人发图不会自动搜图。
-默认只回复文字与来源链接，不发送缩略图。可在插件配置中开启 `nsfw_send_image` 以附带缩略图。"""
+_BOOK_HELP_TEMPLATE = """📖 搜本 · 以图搜本子（搜图Bot酱）用法
+
+① 发送图片并附带 `{p}搜本`
+   · 支持引用一张图片后发送 `{p}搜本`
+   · 支持直接用 `{p}搜本 <图片链接>`
+② 别名：`搜本子`、`soutu`、`找图`
+③ 查看帮助：`{p}搜本帮助`
+
+说明：
+· 搜图Bot酱**只支持以图搜图**，不支持关键词 —— 关键词请用 `{p}搜图`
+· 命中源以 nhentai / e-hentai 等本子库为主
+· 默认只回复文字与来源链接，不发送缩略图（可在配置中开启 `nsfw_send_image`）"""
+
+
+def _render_book_help(prefix: str) -> str:
+    """按**实际命令前缀**渲染「搜本」帮助文案；前缀为空时回退 ``/``。"""
+    return _BOOK_HELP_TEMPLATE.format(p=_prefix_or_default(prefix))
+
+
+# 默认（前缀为 ``/``）的「搜本」帮助文案常量，便于外部引用/测试
+BOOK_HELP_TEXT = _render_book_help(DEFAULT_WAKE_PREFIX)
+
+
+def _render_book_keyword_hint(prefix: str) -> str:
+    """渲染「搜本」收到**纯关键词**时的引导（soutubot 只支持以图搜图）。"""
+    return BOOK_KEYWORD_NOT_SUPPORTED_TEXT.format(p=_prefix_or_default(prefix))
+
+
+def _render_image_not_supported_hint(prefix: str) -> str:
+    """渲染「搜图」收到**图片 / 图片链接**时的引导（搜图只做关键词搜图）。"""
+    return IMAGE_NOT_SUPPORTED_TEXT.format(p=_prefix_or_default(prefix))
+
+
+_HELP_TEMPLATE = """📖 搜图 · 关键词搜图（Safebooru）用法
+
+① 关键词搜图：`{p}搜图 <关键词>`，例如 `{p}搜图 cat_ears`
+② 查看帮助：`{p}搜图帮助`
+
+说明：
+· 「搜图」只做**关键词搜图**，不接受图片
+· 以图搜本子请用 `{p}搜本`；反查 P 站出处请用 `{p}搜P站`
+· 搜图**只能通过指令触发**，群内有人发图不会自动搜图
+· 默认只回复文字与来源链接，不发送缩略图"""
 
 
 def _render_help(prefix: str) -> str:
-    """按**实际命令前缀**渲染帮助文案；前缀为空时回退 ``/``。"""
-    p = prefix if isinstance(prefix, str) and prefix else DEFAULT_WAKE_PREFIX
-    return _HELP_TEMPLATE.format(p=p)
+    """按**实际命令前缀**渲染「搜图」帮助文案；前缀为空时回退 ``/``。"""
+    return _HELP_TEMPLATE.format(p=_prefix_or_default(prefix))
 
 
-# 默认（前缀为 ``/``）的帮助文案常量，便于外部引用/测试
+# 默认（前缀为 ``/``）的「搜图」帮助文案常量，便于外部引用/测试
 HELP_TEXT = _render_help(DEFAULT_WAKE_PREFIX)
 
 
@@ -203,13 +255,13 @@ _SAUCENAO_HELP_TEMPLATE = """📖 搜 P 站（SauceNAO 反查）用法
 · 需先在插件配置中填写 `saucenao_api_key`（申请：https://saucenao.com/user.php?page=search-api）
 · 默认只检索 **Pixiv 系列**数据库，可用配置 `saucenao_db_mask` 调整（96=仅 Pixiv）
 · 免费账户配额：**150 次/天、4 次/30 秒**
-· 中国大陆访问 SauceNAO 通常需要代理（AstrBot 有全局 `http_proxy` 配置可用）"""
+· 中国大陆访问 SauceNAO 通常需要代理（AstrBot 有全局 `http_proxy` 配置可用）
+· 以图搜本子请用 `{p}搜本`；关键词搜图请用 `{p}搜图`"""
 
 
 def _render_saucenao_help(prefix: str) -> str:
     """按实际命令前缀渲染「搜 P 站」帮助文案；前缀为空时回退 ``/``。"""
-    p = prefix if isinstance(prefix, str) and prefix else DEFAULT_WAKE_PREFIX
-    return _SAUCENAO_HELP_TEMPLATE.format(p=p)
+    return _SAUCENAO_HELP_TEMPLATE.format(p=_prefix_or_default(prefix))
 
 
 # 默认（前缀为 ``/``）的「搜 P 站」帮助文案常量
@@ -460,8 +512,20 @@ class SoutuSearchPlugin(Star):
         return prefixes[0] if prefixes else DEFAULT_WAKE_PREFIX
 
     def _help_text(self) -> str:
-        """按当前实际前缀渲染帮助文案。"""
+        """按当前实际前缀渲染「搜图」帮助文案。"""
         return _render_help(self._help_prefix())
+
+    def _book_help_text(self) -> str:
+        """按当前实际前缀渲染「搜本」帮助文案。"""
+        return _render_book_help(self._help_prefix())
+
+    def _book_keyword_hint(self) -> str:
+        """按当前实际前缀渲染「搜本」收到纯关键词时的引导。"""
+        return _render_book_keyword_hint(self._help_prefix())
+
+    def _image_not_supported_hint(self) -> str:
+        """按当前实际前缀渲染「搜图」收到图片时的引导。"""
+        return _render_image_not_supported_hint(self._help_prefix())
 
     def _saucenao_help_text(self) -> str:
         """按当前实际前缀渲染「搜 P 站」帮助文案。"""
@@ -623,11 +687,41 @@ class SoutuSearchPlugin(Star):
     # ------------------------------------------------------------------ #
     # 指令入口（仅指令触发；不监听消息、不自动搜图）
     # ------------------------------------------------------------------ #
-    @filter.command("搜图", alias={"soutu", "找图"})
-    async def sou_cmd(self, event: AstrMessageEvent, args: str = ""):
-        """搜图指令入口：自动判别「关键词」还是「图片」。"""
+    @filter.command("搜本", alias={"搜本子", "soutu", "找图"})
+    async def book_cmd(self, event: AstrMessageEvent, args: str = ""):
+        """「搜本」指令入口：以图搜本子（soutubot），**只接受图片**。
+
+        图片 / 引用图片 / 图片直链 → 走 soutubot；纯关键词 → 引导改用「搜图」。
+        """
         if not self._is_access_allowed(event):
             # 指令受限：回一句简短提示，让用户知道不是插件坏了
+            yield event.plain_result(ACCESS_DENIED_TEXT)
+            return
+        text = args.strip() if isinstance(args, str) else ""
+        recovered = _recover_command_args(event, self._wake_prefixes())
+        if recovered is not None and len(recovered) > len(text):
+            text = recovered
+
+        # 文本形式的帮助子指令
+        if text in ("帮助", "help", "-h", "--help", "用法"):
+            yield event.plain_result(self._book_help_text())
+            return
+
+        async for result in self._dispatch_book(event, text):
+            yield result
+
+    @filter.command("搜本帮助", alias={"搜本help", "soutuhelp"})
+    async def book_help_cmd(self, event: AstrMessageEvent):
+        """「搜本帮助」指令：输出以图搜本子用法说明。"""
+        if not self._is_access_allowed(event):
+            yield event.plain_result(ACCESS_DENIED_TEXT)
+            return
+        yield event.plain_result(self._book_help_text())
+
+    @filter.command("搜图")
+    async def sou_cmd(self, event: AstrMessageEvent, args: str = ""):
+        """「搜图」指令入口：Safebooru 关键词搜图，**只接受关键词**（不接受图片）。"""
+        if not self._is_access_allowed(event):
             yield event.plain_result(ACCESS_DENIED_TEXT)
             return
         text = args.strip() if isinstance(args, str) else ""
@@ -643,9 +737,9 @@ class SoutuSearchPlugin(Star):
         async for result in self._dispatch_search(event, text):
             yield result
 
-    @filter.command("搜图帮助", alias={"搜图help", "soutuhelp"})
+    @filter.command("搜图帮助", alias={"搜图help"})
     async def sou_help_cmd(self, event: AstrMessageEvent):
-        """搜图帮助指令：输出用法说明。"""
+        """「搜图帮助」指令：输出关键词搜图用法说明。"""
         if not self._is_access_allowed(event):
             yield event.plain_result(ACCESS_DENIED_TEXT)
             return
@@ -655,8 +749,8 @@ class SoutuSearchPlugin(Star):
     async def pixiv_cmd(self, event: AstrMessageEvent, args: str = ""):
         """搜 P 站指令入口：用 SauceNAO 反查图片出处（默认仅 Pixiv 库）。
 
-        与 ``搜图`` **分开**独立指令：SauceNAO 免费配额仅 4 次/30 秒，若挂在 ``搜图``
-        上并跑会瞬间耗尽，故按需单独触发。
+        与「搜图」/「搜本」**分开**独立指令：SauceNAO 免费配额仅 4 次/30 秒，若挂在其它
+        指令上并跑会瞬间耗尽，故按需单独触发。
         """
         if not self._is_access_allowed(event):
             yield event.plain_result(ACCESS_DENIED_TEXT)
@@ -683,11 +777,11 @@ class SoutuSearchPlugin(Star):
     # ------------------------------------------------------------------ #
     # 核心调度
     # ------------------------------------------------------------------ #
-    async def _dispatch_search(self, event: AstrMessageEvent, text: str):
-        """判别搜索类型并执行。
+    async def _dispatch_book(self, event: AstrMessageEvent, text: str):
+        """「搜本」调度：以图搜本子（soutubot），**只接受图片**。
 
-        优先级：消息里的图片 → 文本若是 http(s) 图片直链则下载该图 → 否则按关键词搜图。
-        （帮助文案宣称支持 `<指令> <图片链接>`，故这里真正落实该路径；下载失败给出明确提示。）
+        优先级：消息里的图片 → 文本若是 http(s) 图片直链则下载该图 → 否则（纯关键词）
+        回引导提示（**不发起任何搜索**）→ 既无图也无参数则回「搜本帮助」。
         """
         try:
             payload = await self.image_source.from_event(event)
@@ -711,6 +805,29 @@ class SoutuSearchPlugin(Star):
                 async for result in self._search_by_image(event, payload, cached_note=True):
                     yield result
                 return
+
+        if text:
+            # 纯关键词：soutubot 只支持以图搜图 → 给出改用「搜图」的引导，不搜索
+            yield event.plain_result(self._book_keyword_hint())
+            return
+
+        # 既无图片也无参数 → 给出用法
+        yield event.plain_result(self._book_help_text())
+
+    async def _dispatch_search(self, event: AstrMessageEvent, text: str):
+        """「搜图」调度：Safebooru 关键词搜图，**只接受关键词**。
+
+        收到图片（消息图片 / 图片直链）时回引导提示，**不下载、不搜索**（避免浪费带宽、
+        收敛 SSRF 面，也避免把图片路径与关键词路径混淆）。
+        """
+        if self.image_source.has_image(event):
+            yield event.plain_result(self._image_not_supported_hint())
+            return
+
+        if text and is_http_url(text):
+            # 图片直链同样视为「图片」：先于下载判定，直接引导，绝不发起请求
+            yield event.plain_result(self._image_not_supported_hint())
+            return
 
         if text:
             async for result in self._search_by_keyword(event, text):

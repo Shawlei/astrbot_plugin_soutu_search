@@ -1,7 +1,12 @@
 """QA 独立复验 P2-1：图片直链新入口的 SSRF 攻击 + 关键词回归 + 成功/失败路径。
 
-重点攻击 `_dispatch_search` / `_dispatch_saucenao` 新增的 URL 直链分支——
-它是本轮唯一新增的对外输入通路。断言「内网/协议限制依然生效」。
+自 0.4.0 起「图片直链」入口只挂在 **搜本** / **搜P站** 上（对照 0.3.x 挂在 `搜图` 上）：
+
+- ``搜本 <图片链接>`` → 下载后走 soutubot（是唯一新增的 soutubot 直链通路）；
+- ``搜P站 <图片链接>`` → 下载后走 SauceNAO；
+- ``搜图`` → **只做关键词**，收到图片 / 图片链接时只回引导提示、**不下载**。
+
+本轮断言：「内网/协议限制依然生效」，且「搜图不再有下载路径」。
 
 运行:
     python tests/qa_p21_url_ssrf.py
@@ -19,11 +24,15 @@ for _p in (str(PLUGIN_ROOT.parent), str(PLUGIN_ROOT)):
 
 import tests.test_core as _stub  # noqa: E402,F401  (装配 astrbot 桩)
 
+from astrbot.api.message_components import Image  # noqa: E402  (mocked)
+
 from astrbot_plugin_soutu_search.core.formatter import SearchResult, SourceOutcome  # noqa: E402
 from astrbot_plugin_soutu_search.core.image_source import ImagePayload, ImageSource  # noqa: E402
 from astrbot_plugin_soutu_search.main import (  # noqa: E402
     SoutuSearchPlugin,
+    BOOK_KEYWORD_NOT_SUPPORTED_TEXT,
     IMAGE_URL_FETCH_FAIL_TEXT,
+    IMAGE_NOT_SUPPORTED_TEXT,
     SAUCENAO_NO_IMAGE_TEXT,
 )
 
@@ -39,15 +48,18 @@ async def collect(agen):
 
 
 class FakeMessageObj:
-    message_id = "m1"
-    # 无 message 属性 -> from_event 取不到图片
+    def __init__(self, with_image=False):
+        self.message_id = "m1"
+        # 无 message 属性 -> from_event 取不到图片
+        if with_image:
+            self.message = [Image(url="http://img.example/q.jpg")]
 
 
 class FakeEvent:
-    def __init__(self, text=""):
+    def __init__(self, text="", with_image=False):
         self.unified_msg_origin = "umo-A"
         self.message_str = text
-        self.message_obj = FakeMessageObj()
+        self.message_obj = FakeMessageObj(with_image)
 
     def get_message_str(self):
         return self.message_str
@@ -107,7 +119,7 @@ def hr(t):
 
 
 # --------------------------------------------------------------------------- #
-hr("A. SSRF 攻击：把内网/协议 payload 当『文本参数』传给 搜图 / 搜P站")
+hr("A. SSRF 攻击：把内网/协议 payload 当『文本参数』传给 搜本 / 搜P站")
 # --------------------------------------------------------------------------- #
 ATTACKS = [
     "http://127.0.0.1/x.jpg",
@@ -125,31 +137,26 @@ ATTACKS = [
     "http://0177.0.0.1/x.jpg",
 ]
 
-print("--- 搜图（sou_cmd）---")
+print("--- 搜本（book_cmd）---")
 for payload in ATTACKS:
     p = make_plugin()
     stub_soutu = _StubSoutu()
-    stub_booru = _StubBooru()
     p.soutu = stub_soutu
-    p.booru = stub_booru
-    out = run(collect(p.sou_cmd(FakeEvent(payload), args=payload)))
+    out = run(collect(p.book_cmd(FakeEvent(payload), args=payload)))
     kind = out[0][0] if out else "?"
     text = out[0][1] if out and kind == "plain" else ""
     # 判定
-    if kind == "plain" and "拒绝访问内网" in text:
+    if stub_soutu.calls:
+        verdict = ">>> FETCHED-AND-SEARCHED (可能绕过!)"
+    elif kind == "plain" and ("拒绝访问内网" in text or "不支持的图片来源协议" in text):
         verdict = "BLOCKED(SSRF拒绝)"
     elif kind == "plain" and "无法获取图片链接" in text:
-        if "拒绝访问内网" in text or "不支持的图片来源协议" in text:
-            verdict = "BLOCKED"
-        else:
-            verdict = f"FETCH-ATTEMPTED err={text[:60]!r}"
-    elif stub_soutu.calls:
-        verdict = ">>> FETCHED-AND-SEARCHED (可能绕过!)"
-    elif stub_booru.calls:
-        verdict = "keyword-path(未走直链)"
+        verdict = f"BLOCKED/其他错误 {text[:40]!r}"
+    elif kind == "plain" and text == BOOK_KEYWORD_NOT_SUPPORTED_TEXT.format(p="/"):
+        verdict = "非 http 直链 -> 按『搜本不支持关键词』引导（未走直链）"
     else:
         verdict = f"other kind={kind}"
-    print(f"  搜图 {payload:<42} -> {verdict}")
+    print(f"  搜本 {payload:<42} -> {verdict}")
 
 print("\n--- 搜P站（pixiv_cmd, 已配置 key）---")
 for payload in ATTACKS:
@@ -185,7 +192,7 @@ for payload in ATTACKS:
 
 
 # --------------------------------------------------------------------------- #
-hr("C. 关键词路径回归：非 URL 文本仍是关键词搜图")
+hr("C. 关键词路径：搜图 非 URL 文本仍是关键词搜图")
 # --------------------------------------------------------------------------- #
 for kw in ["猫娘 白丝", "cat_ears", "初音未来", "httpfoo"]:
     p = make_plugin()
@@ -213,8 +220,8 @@ async def fake_from_source(url):
 p.image_source.from_source = fake_from_source
 stub = _StubSoutu()
 p.soutu = stub
-out = run(collect(p.sou_cmd(FakeEvent("http://example.com/a.jpg"), args="http://example.com/a.jpg")))
-print(f"  搜图 成功路径: from_source calls={calls}, soutu.search 次数={len(stub.calls)}, 首块={out[0][0]}")
+out = run(collect(p.book_cmd(FakeEvent("http://example.com/a.jpg"), args="http://example.com/a.jpg")))
+print(f"  搜本 成功路径: from_source calls={calls}, soutu.search 次数={len(stub.calls)}, 首块={out[0][0]}")
 
 p2 = make_plugin(saucenao_api_key="k")
 calls2 = []
@@ -235,18 +242,54 @@ print(f"  搜P站 成功路径: from_source calls={calls2}, saucenao.search 次�
 # --------------------------------------------------------------------------- #
 hr("E. 失败路径：from_source 抛错 -> 回 IMAGE_URL_FETCH_FAIL_TEXT 且不崩")
 # --------------------------------------------------------------------------- #
-def boom_plugin():
-    p = make_plugin()
+def boom_plugin(**cfg):
+    p = make_plugin(**cfg)
+
     async def boom(url):
         raise RuntimeError("模拟取图失败")
+
     p.image_source.from_source = boom
     return p
 
 
-o = run(collect(boom_plugin().sou_cmd(FakeEvent("http://x/a.jpg"), args="http://x/a.jpg")))
-print(f"  搜图 失败: kind={o[0][0]} 含提示={'无法获取图片链接' in o[0][1]} 且非用法提示={o[0][1] != __import__('astrbot_plugin_soutu_search.main', fromlist=['_'])._help_text if False else 'n/a'}")
+o = run(collect(boom_plugin().book_cmd(FakeEvent("http://x/a.jpg"), args="http://x/a.jpg")))
+print(f"  搜本 失败: kind={o[0][0]} 含提示={'无法获取图片链接' in o[0][1]}")
 print("     text:", o[0][1].replace("\n", " / ")[:90])
 
-o2 = run(collect(boom_plugin().pixiv_cmd(FakeEvent("http://x/a.jpg"), args="http://x/a.jpg")))
+o2 = run(collect(boom_plugin(saucenao_api_key="k").pixiv_cmd(
+    FakeEvent("http://x/a.jpg"), args="http://x/a.jpg")))
 print(f"  搜P站 失败: kind={o2[0][0]} 含提示={'无法获取图片链接' in o2[0][1]}")
 print("     text:", o2[0][1].replace("\n", " / ")[:90])
+
+
+# --------------------------------------------------------------------------- #
+hr("F. 【0.4.0 新增】搜图 收到图片 / 图片链接：只回引导，绝不下载、不搜索")
+# --------------------------------------------------------------------------- #
+for label, event, arg in (
+    ("消息带图片", FakeEvent("/搜图", with_image=True), ""),
+    ("图片链接文本", FakeEvent("/搜图 http://example.com/a.jpg"), "http://example.com/a.jpg"),
+    ("内网图片链接", FakeEvent("/搜图 http://127.0.0.1/x.jpg"), "http://127.0.0.1/x.jpg"),
+):
+    p = make_plugin()
+    stub_booru = _StubBooru()
+    stub_soutu = _StubSoutu()
+    p.booru = stub_booru
+    p.soutu = stub_soutu
+    dl = []
+
+    async def fake_from_source(url):
+        dl.append(url)
+        return ImagePayload(data=PNG, mime="image/png", filename="a.png")
+
+    async def fake_from_event(_ev):
+        dl.append("<from_event>")
+        return ImagePayload(data=PNG, mime="image/png", filename="a.png")
+
+    p.image_source.from_source = fake_from_source
+    p.image_source.from_event = fake_from_event
+    out = run(collect(p.sou_cmd(event, arg)))
+    hinted = out and out[0][1] == IMAGE_NOT_SUPPORTED_TEXT.format(p="/")
+    verdict = "OK 仅回引导" if (hinted and not dl and not stub_booru.calls and not stub_soutu.calls) else ">>> GAP"
+    print(f"  {verdict:<12} {label:<10} 下载调用={dl} booru={stub_booru.calls} soutu={len(stub_soutu.calls)}")
+
+print("\n完成。")

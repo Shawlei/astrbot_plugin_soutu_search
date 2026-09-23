@@ -124,7 +124,7 @@ check("_access_mode()", p._access_mode(), "all")
 # 甚至用「本会话必命中」的白名单，确认 all 不查表
 p2 = mk(access_mode="all", whitelist=["X"], blacklist=["X"])
 stub_search(p2)
-out_all = run(_collect(p2.sou_cmd(Ev(umo="umo-B", text="/搜图"), "")))
+out_all = run(_collect(p2.book_cmd(Ev(umo="umo-B", text="/搜本"), "")))
 check("mode=all 黑名单含 umo-B，指令仍产出", out_all != [] and out_all[0][1] != ACCESS_DENIED_TEXT, True)
 # 缺省配置（完全不传 access_*）→ 默认 all
 p3 = mk()
@@ -164,11 +164,12 @@ for bl in ([], [""], [" "], [None], "not-a-list", 123, None, {}):
 
 # ===========================================================================
 hr("A4. 受限指令恰好一条 plain_result 提示（不能 0 条也不能多条）")
-for cmd, args in (("sou_cmd", ""), ("sou_help_cmd", None)):
+for cmd, args, text in (("book_cmd", "", "/搜本"), ("book_help_cmd", None, "/搜本帮助"),
+                        ("sou_cmd", "", "/搜图"), ("sou_help_cmd", None, "/搜图帮助")):
     q = mk(access_mode="whitelist", whitelist=[])
     meth = getattr(q, cmd)
-    out = run(_collect(meth(Ev(umo="umo-A", text="/搜图")))) if args is None \
-        else run(_collect(meth(Ev(umo="umo-A", text="/搜图"), args)))
+    out = run(_collect(meth(Ev(umo="umo-A", text=text)))) if args is None \
+        else run(_collect(meth(Ev(umo="umo-A", text=text), args)))
     print(f"  {cmd}: 条数={len(out)} 内容={out}")
     if len(out) != 1 or out[0][0] != "plain" or out[0][1] != ACCESS_DENIED_TEXT:
         FAILS.append(f"{cmd} 受限回复异常: {out!r}")
@@ -183,7 +184,7 @@ for mode, cfg in (
     fetch = {"n": 0}; search = {"n": 0}
     q = mk(cache_ttl=0, **cfg)
     stub_search(q, fetch, search)
-    out = run(_collect(q.sou_cmd(Ev(umo="umo-A", text="/搜图"), "")))
+    out = run(_collect(q.book_cmd(Ev(umo="umo-A", text="/搜本"), "")))
     print(f"  [{mode}] 输出={out!r} 取图次数={fetch['n']} 搜索次数={search['n']}")
     if len(out) != 1 or fetch["n"] != 0 or search["n"] != 0:
         FAILS.append(f"{mode} 受限指令行为异常 out={out} fetch={fetch} search={search}")
@@ -336,8 +337,10 @@ def cev(t):
         def get_message_str(self):
             return t
     return E()
-must_true = ["/搜图", "/搜图 初音未来", "/搜图 甘雨", "/找图 蔚蓝档案"]
-must_false = ["搜图真有意思", "soutubot很棒", "找图…"]
+must_true = ["/搜本", "/搜本 猫娘", "/搜本子", "/soutu 猫娘", "/找图 蔚蓝档案",
+             "/搜本 http://a.com/x.jpg", "/搜本帮助", "/soutuhelp",
+             "/搜图", "/搜图 初音未来", "/搜图 甘雨"]
+must_false = ["搜本真好看", "搜本子真好看", "搜图真有意思", "soutubot很棒", "找图…"]
 for t in must_true:
     check(f"指令识别 True: {t!r}", _command_head(t) is not None, True)
 for t in must_false:
