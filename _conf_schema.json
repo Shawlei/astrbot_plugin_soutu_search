@@ -100,8 +100,8 @@
     "default": "https://safebooru.org"
   },
   "saucenao_api_key": {
-    "description": "SauceNAO API Key（搜 P 站）",
-    "hint": "用于「搜P站」反查图片出处（对接 saucenao.com）。申请地址：https://saucenao.com/user.php?page=search-api 。未填写时「搜P站」会给出引导、不发起请求",
+    "description": "SauceNAO API Key（搜图 · 以图反查）",
+    "hint": "用于「搜图」的以图反查分支（对接 saucenao.com）。申请地址：https://saucenao.com/user.php?page=search-api 。未填写时「搜图」的图片分支会给出引导、不下载、不发起请求（关键词分支不受影响）",
     "type": "string",
     "default": "",
     "secret": true

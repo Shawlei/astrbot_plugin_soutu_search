@@ -1,23 +1,22 @@
-"""指令拆分（0.4.0 破坏性变更）测试：三条互斥指令 + 帮助指令。
+"""指令映射（0.5.0）测试：两条指令 + 帮助指令 + 「搜图」自动判别。
 
-映射（自 0.4.0 起）：
+映射（自 0.5.0 起）：
 
 | 指令 | 别名 | 职责 |
 |---|---|---|
 | ``搜本`` | ``搜本子`` / ``soutu`` / ``找图`` | soutubot 以图搜本子（**只接受图片**） |
 | ``搜本帮助`` | ``搜本help`` / ``soutuhelp`` | |
-| ``搜图`` | 无 | Safebooru 关键词搜图（**只接受关键词**） |
-| ``搜图帮助`` | ``搜图help`` | |
-| ``搜P站`` | ``pixiv`` / ``saucenao`` | SauceNAO 反查（行为不变） |
-| ``搜P站帮助`` | ``搜P站help`` / ``saucenaohelp`` | |
+| ``搜图`` | ``pixiv`` / ``saucenao`` | **自动判别**：图片/图片链接 → SauceNAO 反查 Pixiv；纯关键词 → Safebooru |
+| ``搜图帮助`` | ``搜图help`` / ``pixivhelp`` / ``saucenaohelp`` | |
 
 覆盖：
 - ``_COMMAND_NAMES`` 顺序（帮助类在前、「搜本子」在「搜本」前）；
-- 各指令 / 别名 / 人话连读的判定语义（含 ``搜本`` 新增用例）；
+- 各指令 / 别名 / 人话连读的判定语义；
 - ``搜本``：图片 / 图片直链走 soutubot；纯关键词回引导且**不搜索**；无参回帮助；
-- ``搜图``：图片 / 图片直链回引导且**不下载不搜索**；关键词走 Safebooru；无参回帮助；
+- ``搜图`` 自动判别：图片 → SauceNAO；图片链接 → 下载后 SauceNAO；关键词 → Safebooru；
+  无 api_key 时关键词仍可用、图片分支回 key 引导且**不下载**；无参回帮助；
 - 引导与帮助文案按实际命令前缀渲染；
-- 访问控制覆盖 ``搜本`` 与 ``搜本帮助``。
+- 访问控制覆盖四条指令（``搜本`` / ``搜本帮助`` / ``搜图`` / ``搜图帮助``）。
 
 运行::
     python -m unittest tests.test_command_split -v
@@ -49,8 +48,7 @@ from astrbot_plugin_soutu_search.main import (  # noqa: E402
     BOOK_HELP_TEXT,
     BOOK_KEYWORD_NOT_SUPPORTED_TEXT,
     HELP_TEXT,
-    IMAGE_NOT_SUPPORTED_TEXT,
-    SAUCENAO_HELP_TEXT,
+    SAUCENAO_KEY_MISSING_TEXT,
     SoutuSearchPlugin,
     _COMMAND_NAMES,
     _command_head,
@@ -58,7 +56,6 @@ from astrbot_plugin_soutu_search.main import (  # noqa: E402
     _render_book_help,
     _render_book_keyword_hint,
     _render_help,
-    _render_image_not_supported_hint,
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -123,6 +120,20 @@ class _StubBooru:
         pass
 
 
+class _StubSaucenao:
+    def __init__(self):
+        self.calls = []
+
+    async def search(self, image, **kw):
+        self.calls.append(kw)
+        return SourceOutcome(
+            results=[SearchResult(title="t", source="s", url="u", score=90.0)]
+        )
+
+    async def close(self):
+        pass
+
+
 def make_plugin(**cfg):
     return SoutuSearchPlugin(object(), cfg)
 
@@ -137,12 +148,10 @@ class TestCommandNames(unittest.TestCase):
             _COMMAND_NAMES,
             (
                 "搜本帮助", "搜本help", "soutuhelp",
-                "搜图帮助", "搜图help",
-                "搜P站帮助", "搜P站help", "saucenaohelp",
+                "搜图帮助", "搜图help", "pixivhelp", "saucenaohelp",
                 "搜本子",
-                "搜P站", "saucenao", "pixiv",
                 "搜本", "soutu", "找图",
-                "搜图",
+                "搜图", "saucenao", "pixiv",
             ),
         )
 
@@ -151,7 +160,6 @@ class TestCommandNames(unittest.TestCase):
         for help_name, body in (
             ("搜本帮助", "搜本"),
             ("搜图帮助", "搜图"),
-            ("搜P站帮助", "搜P站"),
         ):
             self.assertLess(idx[help_name], idx[body], f"{help_name} 必须排在 {body} 之前")
 
@@ -201,23 +209,32 @@ class TestCommandHeadSplit(unittest.TestCase):
             self.assertIsNone(_command_head(text), f"不应识别为指令: {text!r}")
 
     def test_search_human_continuation_not_command(self):
-        for text in ("搜图真有意思", "soutubot很棒", "找图…", "搜图帮助…", "帮我搜图"):
+        for text in ("搜图真有意思", "soutubot很棒", "找图…", "搜图帮助…", "帮我搜图",
+                     "pixiv很好用", "saucenao不错"):
             self.assertIsNone(_command_head(text), f"不应识别为指令: {text!r}")
 
-    def test_search_and_pixiv_still_commands(self):
+    def test_search_and_alias_still_commands(self):
         for text, want in (
             ("/搜图", "搜图"),
             ("搜图", "搜图"),
             ("/搜图 cat_ears", "搜图"),
             ("。搜图 x", "搜图"),
+            ("/搜图 http://a.com/x.jpg", "搜图"),
             ("/搜图帮助", "搜图帮助"),
             ("/搜图help", "搜图help"),
-            ("/搜P站", "搜P站"),
             ("/pixiv", "pixiv"),
             ("/saucenao", "saucenao"),
-            ("/搜P站帮助", "搜P站帮助"),
+            ("#pixiv", "pixiv"),
+            ("/pixivhelp", "pixivhelp"),
+            ("/saucenaohelp", "saucenaohelp"),
+            ("/pixiv 猫娘", "pixiv"),
         ):
             self.assertEqual(_command_head(text), want, f"应识别为指令: {text!r}")
+
+    def test_removed_soutu_pixiv_cmd_is_not_command(self):
+        """0.5.0 起 ``搜P站`` / ``搜P站帮助`` 已移除，不再是本插件指令。"""
+        for text in ("/搜P站", "搜P站", "#搜P站", "/搜P站帮助", "搜P站帮助x", "/搜P站 猫娘"):
+            self.assertIsNone(_command_head(text), f"不应识别为指令: {text!r}")
 
     def test_recover_args_book(self):
         self.assertEqual(_recover_command_args(FakeEvent(text="/搜本 猫娘 白丝")), "猫娘 白丝")
@@ -304,39 +321,37 @@ class TestBookCommand(unittest.TestCase):
 
 
 # ===========================================================================
-# 4. 「搜图」行为
+# 4. 「搜图」行为（自动判别）
 # ===========================================================================
 class TestSearchCommand(unittest.TestCase):
-    def test_search_with_message_image_hinted_no_download_no_search(self):
-        p = make_plugin()
+    def _plugin_with_saucenao(self, **cfg):
+        p = make_plugin(**cfg)
+        stub = _StubSaucenao()
+        p.saucenao = stub  # type: ignore[assignment]
+        return p, stub
+
+    def test_search_with_message_image_goes_saucenao(self):
+        """「搜图」+ 图片 → SauceNAO 反查（saucenao.search 1 次，soutu.search 0 次）。"""
+        p, stub_sa = self._plugin_with_saucenao(saucenao_api_key="k")
         stub_soutu = _StubSoutu()
         stub_booru = _StubBooru()
         p.soutu = stub_soutu  # type: ignore[assignment]
         p.booru = stub_booru  # type: ignore[assignment]
-        calls = []
 
-        async def fake_from_source(src):
-            calls.append(src)
-            return ImagePayload(data=PNG, mime="image/png", filename="a.png")
+        async def fake_from_event(event):
+            return ImagePayload(data=PNG, mime="image/png", filename="q.png")
 
-        p.image_source.from_source = fake_from_source  # type: ignore[assignment]
-
-        async def boom_from_event(event):
-            raise AssertionError("「搜图」不得调用 from_event / 下载图片")
-
-        p.image_source.from_event = boom_from_event  # type: ignore[assignment]
-
+        p.image_source.from_event = fake_from_event  # type: ignore[assignment]
         out = collect(p.sou_cmd(FakeEvent(text="/搜图", with_image=True), ""))
-        self.assertEqual(calls, [], "「搜图」不得下载图片")
-        self.assertEqual(stub_soutu.calls, [], "「搜图」不得走以图搜图")
-        self.assertEqual(stub_booru.calls, [], "「搜图」不得把图片当关键词搜")
-        self.assertEqual(out[0][1], IMAGE_NOT_SUPPORTED_TEXT.format(p="/"))
+        self.assertEqual(len(stub_sa.calls), 1, "「搜图」+ 图片应走 SauceNAO")
+        self.assertEqual(stub_soutu.calls, [], "「搜图」不得走 soutubot 以图搜图")
+        self.assertEqual(stub_booru.calls, [], "「搜图」不得把图片当关键词")
+        self.assertEqual(out[0][0], "chain")
 
-    def test_search_with_image_url_hinted_no_download(self):
-        p = make_plugin()
-        stub_soutu = _StubSoutu()
+    def test_search_with_image_url_downloads_then_saucenao(self):
+        """「搜图」+ 图片直链 → 下载后走 SauceNAO。"""
+        p, stub_sa = self._plugin_with_saucenao(saucenao_api_key="k")
         stub_booru = _StubBooru()
-        p.soutu = stub_soutu  # type: ignore[assignment]
         p.booru = stub_booru  # type: ignore[assignment]
         calls = []
 
@@ -346,18 +361,75 @@ class TestSearchCommand(unittest.TestCase):
 
         p.image_source.from_source = fake_from_source  # type: ignore[assignment]
         out = collect(p.sou_cmd(FakeEvent(text="/搜图 http://x/a.jpg"), "http://x/a.jpg"))
-        self.assertEqual(calls, [], "「搜图」不得下载图片直链")
-        self.assertEqual(stub_soutu.calls, [])
+        self.assertEqual(calls, ["http://x/a.jpg"], "应通过 from_source 下载图片链接")
+        self.assertEqual(len(stub_sa.calls), 1)
         self.assertEqual(stub_booru.calls, [])
-        self.assertEqual(out[0][1], IMAGE_NOT_SUPPORTED_TEXT.format(p="/"))
+        self.assertEqual(out[0][0], "chain")
 
     def test_search_keyword_goes_safebooru(self):
         p = make_plugin()
-        stub = _StubBooru()
-        p.booru = stub  # type: ignore[assignment]
+        stub_booru = _StubBooru()
+        stub_sa = _StubSaucenao()
+        stub_soutu = _StubSoutu()
+        p.booru = stub_booru  # type: ignore[assignment]
+        p.saucenao = stub_sa  # type: ignore[assignment]
+        p.soutu = stub_soutu  # type: ignore[assignment]
         out = collect(p.sou_cmd(FakeEvent(text="/搜图 cat_ears"), "cat_ears"))
-        self.assertEqual(stub.calls, ["cat_ears"])
+        self.assertEqual(stub_booru.calls, ["cat_ears"])
+        self.assertEqual(stub_sa.calls, [], "关键词分支不得调用 SauceNAO")
+        self.assertEqual(stub_soutu.calls, [])
         self.assertEqual(out[0][0], "chain")
+
+    def test_search_keyword_works_without_api_key(self):
+        """未配置 api_key 时，「搜图 <关键词>」仍可正常走 Safebooru。"""
+        p = make_plugin()  # saucenao_api_key 默认空
+        stub_booru = _StubBooru()
+        stub_sa = _StubSaucenao()
+        p.booru = stub_booru  # type: ignore[assignment]
+        p.saucenao = stub_sa  # type: ignore[assignment]
+        out = collect(p.sou_cmd(FakeEvent(text="/搜图 猫娘"), "猫娘"))
+        self.assertEqual(stub_booru.calls, ["猫娘"], "无 key 也应能关键词搜图")
+        self.assertEqual(len(stub_sa.calls), 0)
+        self.assertEqual(out[0][0], "chain")
+
+    def test_search_image_without_api_key_hints_and_no_download(self):
+        """未配置 api_key 时，「搜图」+ 图片回 key 引导，且**零下载**。"""
+        p = make_plugin()  # 无 key
+        stub_sa = _StubSaucenao()
+        p.saucenao = stub_sa  # type: ignore[assignment]
+        downloaded = []
+
+        async def boom_from_event(event):
+            downloaded.append("<from_event>")
+            return ImagePayload(data=PNG, mime="image/png", filename="q.png")
+
+        async def boom_from_source(src):
+            downloaded.append(src)
+            return ImagePayload(data=PNG, mime="image/png", filename="a.png")
+
+        p.image_source.from_event = boom_from_event  # type: ignore[assignment]
+        p.image_source.from_source = boom_from_source  # type: ignore[assignment]
+        out = collect(p.sou_cmd(FakeEvent(text="/搜图", with_image=True), ""))
+        self.assertEqual(downloaded, [], "未配置 key 时不得下载图片")
+        self.assertEqual(stub_sa.calls, [], "未配置 key 时不得发起反查")
+        self.assertEqual(out[0][1], SAUCENAO_KEY_MISSING_TEXT)
+
+    def test_search_image_url_without_api_key_hints_and_no_download(self):
+        """未配置 api_key 时，「搜图」+ 图片链接同样回 key 引导、零下载。"""
+        p = make_plugin()  # 无 key
+        stub_sa = _StubSaucenao()
+        p.saucenao = stub_sa  # type: ignore[assignment]
+        downloaded = []
+
+        async def boom_from_source(src):
+            downloaded.append(src)
+            return ImagePayload(data=PNG, mime="image/png", filename="a.png")
+
+        p.image_source.from_source = boom_from_source  # type: ignore[assignment]
+        out = collect(p.sou_cmd(FakeEvent(text="/搜图 http://x/a.jpg"), "http://x/a.jpg"))
+        self.assertEqual(downloaded, [])
+        self.assertEqual(stub_sa.calls, [])
+        self.assertEqual(out[0][1], SAUCENAO_KEY_MISSING_TEXT)
 
     def test_search_no_args_returns_help(self):
         p = make_plugin()
@@ -403,38 +475,32 @@ class TestRendering(unittest.TestCase):
     def test_book_keyword_hint_render(self):
         text = _render_book_keyword_hint("#")
         self.assertIn("#搜图 <关键词>", text)
-        self.assertIn("#搜P站", text)
+        self.assertIn("#搜图", text)
         self.assertNotIn("/搜图", text)
+        self.assertNotIn("搜P站", text)
         self.assertEqual(_render_book_keyword_hint(""), BOOK_KEYWORD_NOT_SUPPORTED_TEXT.format(p="/"))
         self.assertEqual(_render_book_keyword_hint(None), BOOK_KEYWORD_NOT_SUPPORTED_TEXT.format(p="/"))
-
-    def test_image_not_supported_hint_render(self):
-        text = _render_image_not_supported_hint("#")
-        self.assertIn("#搜本", text)
-        self.assertIn("#搜P站", text)
-        self.assertNotIn("/搜本", text)
-        self.assertEqual(
-            _render_image_not_supported_hint(""), IMAGE_NOT_SUPPORTED_TEXT.format(p="/")
-        )
 
     def test_plugin_hints_use_actual_prefix(self):
         ctx = type("C", (), {"get_config": lambda self: {"wake_prefix": ["#"]}})()
         p = SoutuSearchPlugin(ctx, {})
         self.assertIn("#搜本", p._book_help_text())
         self.assertIn("#搜图", p._book_keyword_hint())
-        self.assertIn("#搜本", p._image_not_supported_hint())
 
-    def test_saucenao_help_cross_reference(self):
+    def test_help_text_merges_auto_discrimination(self):
+        """「搜图帮助」合并 SauceNAO + 关键词两条路，且不再提 `搜P站`。"""
         p = make_plugin()
-        text = p._saucenao_help_text()
+        text = p._help_text()
+        self.assertIn("SauceNAO", text)
+        self.assertIn("Safebooru", text)
         self.assertIn("搜本", text)
-        self.assertIn("搜图", text)
-        self.assertIn("/搜P站", text)
-        self.assertIn("/搜P站", SAUCENAO_HELP_TEXT)
+        self.assertIn("/搜图帮助", text)
+        self.assertNotIn("搜P站", text)
+        self.assertNotIn("搜P站", HELP_TEXT)
 
 
 # ===========================================================================
-# 6. 访问控制覆盖「搜本」与「搜本帮助」
+# 6. 访问控制覆盖四条指令（搜本 / 搜本帮助 / 搜图 / 搜图帮助）
 # ===========================================================================
 class TestBookAccessControl(unittest.TestCase):
     def _denied_plugin(self):
@@ -449,6 +515,18 @@ class TestBookAccessControl(unittest.TestCase):
     def test_book_help_cmd_denied(self):
         p = self._denied_plugin()
         out = collect(p.book_help_cmd(FakeEvent(umo="umo-A", text="/搜本帮助")))
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0][1], ACCESS_DENIED_TEXT)
+
+    def test_sou_cmd_denied(self):
+        p = self._denied_plugin()
+        out = collect(p.sou_cmd(FakeEvent(umo="umo-A", text="/搜图"), ""))
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0][1], ACCESS_DENIED_TEXT)
+
+    def test_sou_help_cmd_denied(self):
+        p = self._denied_plugin()
+        out = collect(p.sou_help_cmd(FakeEvent(umo="umo-A", text="/搜图帮助")))
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0][1], ACCESS_DENIED_TEXT)
 
@@ -467,6 +545,29 @@ class TestBookAccessControl(unittest.TestCase):
         self.assertEqual(out[0][1], ACCESS_DENIED_TEXT)
         self.assertEqual(fetched, [], "受限时应零取图")
         self.assertEqual(stub_soutu.calls, [], "受限时应零搜索")
+
+    def test_sou_cmd_denied_zero_requests(self):
+        """受限时「搜图」+ 图片必须零下载、零搜索（连 key 引导都不给）。"""
+        p = make_plugin(access_mode="whitelist", whitelist=[])
+        stub_sa = _StubSaucenao()
+        p.saucenao = stub_sa  # type: ignore[assignment]
+        fetched = []
+
+        async def fake_from_event(event):
+            fetched.append(1)
+            return ImagePayload(data=PNG, mime="image/png", filename="q.png")
+
+        p.image_source.from_event = fake_from_event  # type: ignore[assignment]
+
+        async def fake_has_image(event):
+            fetched.append("<has_image>")
+            return True
+
+        p.image_source.has_image = fake_has_image  # type: ignore[assignment]
+        out = collect(p.sou_cmd(FakeEvent(umo="umo-A", text="/搜图"), ""))
+        self.assertEqual(out[0][1], ACCESS_DENIED_TEXT)
+        self.assertEqual(fetched, [], "受限时应零结构检测 / 零取图")
+        self.assertEqual(stub_sa.calls, [], "受限时应零搜索")
 
 
 if __name__ == "__main__":

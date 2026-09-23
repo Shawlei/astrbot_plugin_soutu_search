@@ -1,8 +1,9 @@
 """QA 修复回归测试：P2-1（图片直链）、P2-2（dbmask=0）、P3（warning 去重 emoji）。
 
-- P2-1：帮助文案宣称支持 `<指令> <图片链接>`，故 `搜本` / `搜P站` 必须**真正**下载该链接；
-  失败时给出明确提示（而非死循环回同一句用法提示）。自 0.4.0 起「搜图」拆为纯关键词指令，
-  收到图片链接只回引导提示、**不下载**。
+- P2-1：帮助文案宣称支持 `<指令> <图片链接>`，故 `搜本` / `搜图` 必须**真正**下载该链接；
+  失败时给出明确提示（而非死循环回同一句用法提示）。自 0.5.0 起 `搜图` 自动判别：
+  有图片 / 图片链接 → 走 SauceNAO 反查；纯关键词 → 走 Safebooru；未配置 api_key 时
+  图片分支**先回引导、不下载**。
 - P2-2：`dbmask=0`（意图"不限库"）时**不发送** `dbmask` 参数（避免误发 0 导致搜不到）。
 - P3：provider 自带的 `⚠️` 前缀 warning 与 formatter 叠加时不得出现「⚠️ ⚠️」。
 
@@ -33,8 +34,9 @@ from astrbot_plugin_soutu_search.core.formatter import (  # noqa: E402
 from astrbot_plugin_soutu_search.core.image_source import ImagePayload  # noqa: E402
 from astrbot_plugin_soutu_search.core.saucenao_client import SaucenaoClient  # noqa: E402
 from astrbot_plugin_soutu_search.main import (  # noqa: E402
+    HELP_TEXT,
     IMAGE_URL_FETCH_FAIL_TEXT,
-    SAUCENAO_NO_IMAGE_TEXT,
+    SAUCENAO_KEY_MISSING_TEXT,
     SoutuSearchPlugin,
 )
 
@@ -159,36 +161,36 @@ class TestImageUrlDispatch(unittest.TestCase):
         p.image_source.from_source = fake_from_source  # type: ignore[assignment]
         return p
 
-    def test_pixiv_url_is_downloaded_then_searched(self):
+    def test_search_url_is_downloaded_then_saucenao(self):
         calls = []
         p = self._plugin_with_source(calls)
         stub = _StubSaucenao()
         p.saucenao = stub  # type: ignore[assignment]
-        ev = FakeEvent(text="/搜P站 http://x/a.jpg")
-        out = collect(p.pixiv_cmd(ev, args="http://x/a.jpg"))
+        ev = FakeEvent(text="/搜图 http://x/a.jpg")
+        out = collect(p.sou_cmd(ev, args="http://x/a.jpg"))
         self.assertEqual(calls, ["http://x/a.jpg"], "应通过 from_source 下载该链接")
         self.assertEqual(len(stub.calls), 1, "下载成功后应发起一次反查")
         self.assertEqual(out[0][0], "chain", "有结果应返回消息链，而非用法提示")
 
-    def test_pixiv_url_fetch_failure_gives_readable_message(self):
+    def test_search_url_fetch_failure_gives_readable_message(self):
         p = SoutuSearchPlugin(object(), {"saucenao_api_key": "k"})
 
         async def boom(src):
             raise RuntimeError("出于安全考虑，拒绝访问内网/保留地址")
 
         p.image_source.from_source = boom  # type: ignore[assignment]
-        out = collect(p.pixiv_cmd(FakeEvent(), args="http://10.0.0.1/a.jpg"))
+        out = collect(p.sou_cmd(FakeEvent(), args="http://10.0.0.1/a.jpg"))
         self.assertEqual(out[0][0], "plain")
         self.assertIn("无法获取图片链接", out[0][1])
-        self.assertNotEqual(out[0][1], SAUCENAO_NO_IMAGE_TEXT.format(p="/"))
+        self.assertNotEqual(out[0][1], HELP_TEXT)
 
-    def test_pixiv_no_image_no_url_still_usage_hint(self):
+    def test_search_no_image_no_url_still_usage_hint(self):
         p = SoutuSearchPlugin(object(), {"saucenao_api_key": "k"})
-        out = collect(p.pixiv_cmd(FakeEvent(), args=""))
-        self.assertEqual(out[0][1], SAUCENAO_NO_IMAGE_TEXT.format(p="/"))
+        out = collect(p.sou_cmd(FakeEvent(), args=""))
+        self.assertEqual(out[0][1], HELP_TEXT)
 
     def test_soutu_url_is_downloaded_then_image_searched(self):
-        """图片直链下载后走以图搜图 —— 自 0.4.0 起该路径挂在「搜本」（soutubot）上。"""
+        """图片直链下载后走以图搜图 —— soutubot 只由「搜本」触发。"""
         calls = []
         p = SoutuSearchPlugin(object(), {})
 
@@ -225,10 +227,10 @@ class TestImageUrlDispatch(unittest.TestCase):
         self.assertEqual(stub.calls, ["cat"], "非 URL 文本仍走关键词搜图")
         self.assertEqual(out[0][0], "chain")
 
-    def test_search_url_is_not_downloaded_but_hinted(self):
-        """「搜图」收到图片直链 → 回引导提示，**不下载**（省带宽 + 收敛 SSRF 面）。"""
+    def test_search_url_without_key_is_not_downloaded_but_hinted(self):
+        """「搜图」收到图片直链但**未配置 key** → 回 key 引导，**不下载**（省带宽 + 收敛 SSRF 面）。"""
         calls = []
-        p = SoutuSearchPlugin(object(), {})
+        p = SoutuSearchPlugin(object(), {})  # 无 api_key
 
         async def fake_from_source(src):
             calls.append(src)
@@ -237,19 +239,21 @@ class TestImageUrlDispatch(unittest.TestCase):
         p.image_source.from_source = fake_from_source  # type: ignore[assignment]
         stub_soutu = _StubSoutu()
         stub_booru = _StubBooru()
+        stub_sa = _StubSaucenao()
         p.soutu = stub_soutu  # type: ignore[assignment]
         p.booru = stub_booru  # type: ignore[assignment]
+        p.saucenao = stub_sa  # type: ignore[assignment]
         out = collect(p.sou_cmd(FakeEvent(text="/搜图 http://x/a.jpg"), args="http://x/a.jpg"))
-        self.assertEqual(calls, [], "「搜图」不得下载图片链接")
-        self.assertEqual(stub_soutu.calls, [], "「搜图」不得走以图搜图")
-        self.assertEqual(stub_booru.calls, [], "「搜图」不得把 URL 当关键词搜")
-        self.assertEqual(out[0][0], "plain")
-        self.assertIn("不接受图片", out[0][1])
+        self.assertEqual(calls, [], "未配置 key 时不得下载图片链接")
+        self.assertEqual(stub_soutu.calls, [], "不得走以图搜图")
+        self.assertEqual(stub_booru.calls, [], "不得把 URL 当关键词搜")
+        self.assertEqual(stub_sa.calls, [], "不得发起 SauceNAO 请求")
+        self.assertEqual(out[0][1], SAUCENAO_KEY_MISSING_TEXT)
 
-    def test_help_text_still_no_double_emoji_claim(self):
-        # 帮助文案仍宣称支持图片链接（现在确已实现）
+    def test_help_text_claims_image_url_support(self):
+        # 帮助文案宣称支持图片链接（现在确已实现）
         p = SoutuSearchPlugin(object(), {})
-        self.assertIn("搜P站 <图片链接>", p._saucenao_help_text())
+        self.assertIn("搜图 <图片链接>", p._help_text())
 
 
 # ===========================================================================

@@ -1,12 +1,12 @@
-"""QA 独立复验 P2-1：图片直链新入口的 SSRF 攻击 + 关键词回归 + 成功/失败路径。
+"""QA 独立复验 P2-1：图片直链入口的 SSRF 攻击 + 关键词回归 + 自动判别 + 成功/失败路径。
 
-自 0.4.0 起「图片直链」入口只挂在 **搜本** / **搜P站** 上（对照 0.3.x 挂在 `搜图` 上）：
+自 0.5.0 起「图片直链 / 图片」入口分挂在 **搜本** 与 **搜图** 上：
 
-- ``搜本 <图片链接>`` → 下载后走 soutubot（是唯一新增的 soutubot 直链通路）；
-- ``搜P站 <图片链接>`` → 下载后走 SauceNAO；
-- ``搜图`` → **只做关键词**，收到图片 / 图片链接时只回引导提示、**不下载**。
+- ``搜本 <图片链接>`` → 下载后走 soutubot 以图搜本子；
+- ``搜图 <图片链接>`` / ``搜图`` + 图片 → 下载后走 SauceNAO 反查（未配置 key 时只回引导、不下载）；
+- ``搜图 <关键词>`` → 走 Safebooru 关键词搜图。
 
-本轮断言：「内网/协议限制依然生效」，且「搜图不再有下载路径」。
+本轮断言：「内网/协议限制依然生效」，且「搜图未配置 key 时图片分支零下载」。
 
 运行:
     python tests/qa_p21_url_ssrf.py
@@ -31,9 +31,9 @@ from astrbot_plugin_soutu_search.core.image_source import ImagePayload, ImageSou
 from astrbot_plugin_soutu_search.main import (  # noqa: E402
     SoutuSearchPlugin,
     BOOK_KEYWORD_NOT_SUPPORTED_TEXT,
+    HELP_TEXT,
     IMAGE_URL_FETCH_FAIL_TEXT,
-    IMAGE_NOT_SUPPORTED_TEXT,
-    SAUCENAO_NO_IMAGE_TEXT,
+    SAUCENAO_KEY_MISSING_TEXT,
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
@@ -119,7 +119,7 @@ def hr(t):
 
 
 # --------------------------------------------------------------------------- #
-hr("A. SSRF 攻击：把内网/协议 payload 当『文本参数』传给 搜本 / 搜P站")
+hr("A. SSRF 攻击：把内网/协议 payload 当『文本参数』传给 搜本 / 搜图")
 # --------------------------------------------------------------------------- #
 ATTACKS = [
     "http://127.0.0.1/x.jpg",
@@ -158,12 +158,14 @@ for payload in ATTACKS:
         verdict = f"other kind={kind}"
     print(f"  搜本 {payload:<42} -> {verdict}")
 
-print("\n--- 搜P站（pixiv_cmd, 已配置 key）---")
+print("\n--- 搜图（sou_cmd, 已配置 key）---")
 for payload in ATTACKS:
     p = make_plugin(saucenao_api_key="k")
     stub_sa = _StubSaucenao()
+    stub_booru = _StubBooru()
     p.saucenao = stub_sa
-    out = run(collect(p.pixiv_cmd(FakeEvent(payload), args=payload)))
+    p.booru = stub_booru
+    out = run(collect(p.sou_cmd(FakeEvent(payload), args=payload)))
     kind = out[0][0] if out else "?"
     text = out[0][1] if out and kind == "plain" else ""
     if kind == "plain" and "拒绝访问内网" in text:
@@ -172,11 +174,11 @@ for payload in ATTACKS:
         verdict = "BLOCKED/其他错误 " + text[:40]
     elif stub_sa.calls:
         verdict = ">>> FETCHED-AND-SEARCHED (可能绕过!)"
-    elif kind == "plain" and text == SAUCENAO_NO_IMAGE_TEXT.format(p="/"):
-        verdict = "no-image-hint (未走直链)"
+    elif stub_booru.calls:
+        verdict = "非 http 直链 -> 按关键词走 Safebooru（未走直链）"
     else:
         verdict = f"other kind={kind}"
-    print(f"  搜P站 {payload:<40} -> {verdict}")
+    print(f"  搜图 {payload:<40} -> {verdict}")
 
 
 # --------------------------------------------------------------------------- #
@@ -198,11 +200,14 @@ for kw in ["猫娘 白丝", "cat_ears", "初音未来", "httpfoo"]:
     p = make_plugin()
     stub_booru = _StubBooru()
     stub_soutu = _StubSoutu()
+    stub_sa = _StubSaucenao()
     p.booru = stub_booru
     p.soutu = stub_soutu
+    p.saucenao = stub_sa
     out = run(collect(p.sou_cmd(FakeEvent(kw), args=kw)))
     tag = "关键词" if stub_booru.calls else ("以图" if stub_soutu.calls else "?")
-    print(f"  搜图 {kw!r:<14} -> 走了 {tag} (booru={stub_booru.calls}, soutu={len(stub_soutu.calls)})")
+    print(f"  搜图 {kw!r:<14} -> 走了 {tag} "
+          f"(booru={stub_booru.calls}, soutu={len(stub_soutu.calls)}, saucenao={len(stub_sa.calls)})")
 
 
 # --------------------------------------------------------------------------- #
@@ -235,8 +240,8 @@ async def fake_from_source2(url):
 p2.image_source.from_source = fake_from_source2
 stub2 = _StubSaucenao()
 p2.saucenao = stub2
-out2 = run(collect(p2.pixiv_cmd(FakeEvent("http://example.com/a.jpg"), args="http://example.com/a.jpg")))
-print(f"  搜P站 成功路径: from_source calls={calls2}, saucenao.search 次数={len(stub2.calls)}, 首块={out2[0][0]}")
+out2 = run(collect(p2.sou_cmd(FakeEvent("http://example.com/a.jpg"), args="http://example.com/a.jpg")))
+print(f"  搜图 成功路径: from_source calls={calls2}, saucenao.search 次数={len(stub2.calls)}, 首块={out2[0][0]}")
 
 
 # --------------------------------------------------------------------------- #
@@ -256,40 +261,93 @@ o = run(collect(boom_plugin().book_cmd(FakeEvent("http://x/a.jpg"), args="http:/
 print(f"  搜本 失败: kind={o[0][0]} 含提示={'无法获取图片链接' in o[0][1]}")
 print("     text:", o[0][1].replace("\n", " / ")[:90])
 
-o2 = run(collect(boom_plugin(saucenao_api_key="k").pixiv_cmd(
+o2 = run(collect(boom_plugin(saucenao_api_key="k").sou_cmd(
     FakeEvent("http://x/a.jpg"), args="http://x/a.jpg")))
-print(f"  搜P站 失败: kind={o2[0][0]} 含提示={'无法获取图片链接' in o2[0][1]}")
+print(f"  搜图 失败: kind={o2[0][0]} 含提示={'无法获取图片链接' in o2[0][1]}")
 print("     text:", o2[0][1].replace("\n", " / ")[:90])
 
 
 # --------------------------------------------------------------------------- #
-hr("F. 【0.4.0 新增】搜图 收到图片 / 图片链接：只回引导，绝不下载、不搜索")
+hr("F. 【0.5.0】搜图自动判别：图片→SauceNAO；关键词→Safebooru；无 key 图片分支零下载")
 # --------------------------------------------------------------------------- #
-for label, event, arg in (
-    ("消息带图片", FakeEvent("/搜图", with_image=True), ""),
-    ("图片链接文本", FakeEvent("/搜图 http://example.com/a.jpg"), "http://example.com/a.jpg"),
-    ("内网图片链接", FakeEvent("/搜图 http://127.0.0.1/x.jpg"), "http://127.0.0.1/x.jpg"),
-):
-    p = make_plugin()
-    stub_booru = _StubBooru()
-    stub_soutu = _StubSoutu()
-    p.booru = stub_booru
-    p.soutu = stub_soutu
-    dl = []
 
-    async def fake_from_source(url):
-        dl.append(url)
-        return ImagePayload(data=PNG, mime="image/png", filename="a.png")
+# F1. 有 key + 消息带图片 -> SauceNAO，且不碰 booru/soutu
+p = make_plugin(saucenao_api_key="k")
+stub_sa = _StubSaucenao()
+stub_booru = _StubBooru()
+stub_soutu = _StubSoutu()
+p.saucenao, p.booru, p.soutu = stub_sa, stub_booru, stub_soutu
+dl = []
 
-    async def fake_from_event(_ev):
-        dl.append("<from_event>")
-        return ImagePayload(data=PNG, mime="image/png", filename="a.png")
 
-    p.image_source.from_source = fake_from_source
-    p.image_source.from_event = fake_from_event
-    out = run(collect(p.sou_cmd(event, arg)))
-    hinted = out and out[0][1] == IMAGE_NOT_SUPPORTED_TEXT.format(p="/")
-    verdict = "OK 仅回引导" if (hinted and not dl and not stub_booru.calls and not stub_soutu.calls) else ">>> GAP"
-    print(f"  {verdict:<12} {label:<10} 下载调用={dl} booru={stub_booru.calls} soutu={len(stub_soutu.calls)}")
+async def fe_img(_ev):
+    dl.append("<from_event>")
+    return ImagePayload(data=PNG, mime="image/png", filename="a.png")
+
+
+p.image_source.from_event = fe_img
+out = run(collect(p.sou_cmd(FakeEvent("/搜图", with_image=True), "")))
+ok = len(stub_sa.calls) == 1 and not stub_booru.calls and not stub_soutu.calls
+print(f"  {'OK ' if ok else '>>> GAP'}  搜图+图片(有key) -> saucenao={len(stub_sa.calls)} "
+      f"booru={stub_booru.calls} soutu={len(stub_soutu.calls)} 下载={dl} 首块={out[0][0]}")
+
+# F2. 有 key + 图片链接 -> 下载后 SauceNAO
+p2 = make_plugin(saucenao_api_key="k")
+stub_sa2 = _StubSaucenao()
+stub_booru2 = _StubBooru()
+p2.saucenao, p2.booru = stub_sa2, stub_booru2
+dl2 = []
+
+
+async def fs2(url):
+    dl2.append(url)
+    return ImagePayload(data=PNG, mime="image/png", filename="a.png")
+
+
+p2.image_source.from_source = fs2
+out2 = run(collect(p2.sou_cmd(FakeEvent("/搜图 http://e.com/a.jpg"), "http://e.com/a.jpg")))
+ok2 = dl2 == ["http://e.com/a.jpg"] and len(stub_sa2.calls) == 1 and not stub_booru2.calls
+print(f"  {'OK ' if ok2 else '>>> GAP'}  搜图+图片链接(有key) -> 下载={dl2} "
+      f"saucenao={len(stub_sa2.calls)} booru={stub_booru2.calls} 首块={out2[0][0]}")
+
+# F3. 关键词 -> Safebooru，不碰 saucenao/soutu
+p3 = make_plugin()
+stub_sa3 = _StubSaucenao()
+stub_booru3 = _StubBooru()
+stub_soutu3 = _StubSoutu()
+p3.saucenao, p3.booru, p3.soutu = stub_sa3, stub_booru3, stub_soutu3
+out3 = run(collect(p3.sou_cmd(FakeEvent("/搜图 cat_ears"), "cat_ears")))
+ok3 = stub_booru3.calls == ["cat_ears"] and not stub_sa3.calls and not stub_soutu3.calls
+print(f"  {'OK ' if ok3 else '>>> GAP'}  搜图+关键词 -> booru={stub_booru3.calls} "
+      f"saucenao={len(stub_sa3.calls)} soutu={len(stub_soutu3.calls)} 首块={out3[0][0]}")
+
+# F4. 无 key + 图片 -> 回 key 引导，零下载
+p4 = make_plugin()  # 无 key
+dl4 = []
+
+
+async def fe_img4(_ev):
+    dl4.append("<from_event>")
+    return ImagePayload(data=PNG, mime="image/png", filename="a.png")
+
+
+async def fs4(url):
+    dl4.append(url)
+    return ImagePayload(data=PNG, mime="image/png", filename="a.png")
+
+
+p4.image_source.from_event = fe_img4
+p4.image_source.from_source = fs4
+out4 = run(collect(p4.sou_cmd(FakeEvent("/搜图", with_image=True), "")))
+ok4 = out4[0][1] == SAUCENAO_KEY_MISSING_TEXT and not dl4
+print(f"  {'OK ' if ok4 else '>>> GAP'}  搜图+图片(无key) -> 回key引导={out4[0][1] == SAUCENAO_KEY_MISSING_TEXT} 下载={dl4}")
+
+# F5. 无 key + 关键词 -> 仍可关键词搜图
+p5 = make_plugin()  # 无 key
+stub_booru5 = _StubBooru()
+p5.booru = stub_booru5
+out5 = run(collect(p5.sou_cmd(FakeEvent("/搜图 猫娘"), "猫娘")))
+ok5 = stub_booru5.calls == ["猫娘"] and out5[0][0] == "chain"
+print(f"  {'OK ' if ok5 else '>>> GAP'}  搜图+关键词(无key) -> booru={stub_booru5.calls} 首块={out5[0][0]}")
 
 print("\n完成。")

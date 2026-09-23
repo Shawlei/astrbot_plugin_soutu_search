@@ -1,4 +1,4 @@
-"""SauceNAO（搜 P 站）provider 单元测试。
+"""SauceNAO（`搜图` 的以图反查分支）provider 单元测试。
 
 覆盖（依据 ``recon/API_SAUCENAO.md`` 规范，用**构造的响应样例**离线验证）：
 - 数据库掩码：``96 == 0x20 | 0x40`` 显式断言、非法值回退、``0``（不限库）放行；
@@ -9,8 +9,9 @@
 - 缩略图不外传文本；NSFW 关闭时不产生 image 块；
 - 配额：``long_remaining`` / ``short_remaining`` 耗尽提示，字段缺失不报错；
 - 网络层错误：401/403/429/500 / 超时 / 非 JSON / status 错误；
-- 指令路由：``搜P站`` / ``pixiv`` / ``saucenao`` 识别，人话连读不误判，``搜图帮助`` 仍优先；
-- 访问控制覆盖新指令；api_key 缺失给出引导、不发请求；
+- 指令路由：``搜图``（别名 ``pixiv`` / ``saucenao``）识别，人话连读不误判，``搜图帮助`` 仍优先，
+  ``搜P站`` 已不再是本插件指令；
+- 访问控制覆盖新指令；api_key 缺失时**图片分支**给出引导且不下载、不发请求；
 - 配置一致性 20 ↔ 20。
 
 复用 tests/test_core.py 的 astrbot 桩（import 即完成 sys.modules 装配）。
@@ -54,12 +55,12 @@ from astrbot_plugin_soutu_search.core.saucenao_client import (  # noqa: E402
 )
 from astrbot_plugin_soutu_search.main import (  # noqa: E402
     ACCESS_DENIED_TEXT,
-    SAUCENAO_HELP_TEXT,
+    HELP_TEXT,
     SAUCENAO_KEY_MISSING_TEXT,
     SAUCENAO_NO_IMAGE_TEXT,
     SoutuSearchPlugin,
     _command_head,
-    _render_saucenao_help,
+    _render_help,
 )
 
 
@@ -587,78 +588,101 @@ class FakeEvent:
 
 
 class TestCommandRouting(unittest.TestCase):
-    def test_pixiv_commands_recognized(self):
-        for t in ("/搜P站", "搜P站", "#搜P站", "/pixiv", "/saucenao", "#pixiv",
-                  "/搜P站帮助", "搜P站帮助x", "/pixiv 猫娘", "/搜P站 http://x/a.jpg"):
+    def test_search_and_alias_commands_recognized(self):
+        for t in ("/搜图", "搜图", "#搜图", "/pixiv", "/saucenao", "#pixiv",
+                  "/搜图帮助", "搜图帮助x", "/pixiv 猫娘", "/搜图 http://x/a.jpg",
+                  "/pixivhelp", "/saucenaohelp"):
             self.assertIsNotNone(_command_head(t), f"应识别为指令: {t!r}")
 
+    def test_removed_pixiv_cmd_is_not_command(self):
+        """0.5.0 起 ``搜P站`` / ``搜P站帮助`` 已移除。"""
+        for t in ("/搜P站", "搜P站", "#搜P站", "/搜P站帮助", "搜P站帮助x", "/搜P站 猫娘"):
+            self.assertIsNone(_command_head(t), f"不应识别为指令: {t!r}")
+
     def test_human_continuation_not_command(self):
-        for t in ("搜P站真好用", "pixiv真好用", "saucenao很好用", "pixiv…",
-                  "p站真好用", "搜P站帮助…"):
+        for t in ("搜图真有意思", "pixiv真好用", "saucenao很好用", "pixiv…",
+                  "pixiv很好用", "saucenao不错", "搜图帮助…", "soutubot很棒"):
             self.assertIsNone(_command_head(t), f"不应识别为指令（人话）: {t!r}")
 
-    def test_pixiv_aliases_are_ascii_ok(self):
+    def test_alias_ascii_ok(self):
         # 纯 ASCII 别名 #pixiv 正确识别
         self.assertEqual(_command_head("#pixiv", ["#"]), "pixiv")
         self.assertEqual(_command_head("#saucenao", ["#"]), "saucenao")
-        self.assertEqual(_command_head("#搜P站", ["#"]), "搜P站")
+        self.assertEqual(_command_head("#pixivhelp", ["#"]), "pixivhelp")
 
-    def test_pixiv_help_preferred_over_pixiv(self):
-        self.assertEqual(_command_head("/搜P站帮助"), "搜P站帮助")
-
-    def test_soutu_help_still_preferred(self):
-        # 不回归：搜图帮助 仍优先于 搜图
+    def test_help_preferred_over_body(self):
         self.assertEqual(_command_head("/搜图帮助"), "搜图帮助")
         self.assertEqual(_command_head("/搜图"), "搜图")
 
-    def test_pixiv_cmd_with_cjk_arg(self):
-        self.assertEqual(_command_head("/搜P站 猫娘"), "搜P站")
+    def test_alias_with_cjk_arg(self):
+        self.assertEqual(_command_head("/pixiv 猫娘"), "pixiv")
+        self.assertEqual(_command_head("/saucenao 猫娘"), "saucenao")
 
 
 class TestSaucenaoPluginCommands(unittest.TestCase):
     def _plugin(self, cfg=None):
         return SoutuSearchPlugin(object(), cfg or {})
 
-    def test_api_key_missing_guidance(self):
+    def test_api_key_missing_guidance_no_download(self):
+        """未配置 api_key：图片分支回 key 引导，且**零下载**。"""
         p = self._plugin({})
-        out = collect(p.pixiv_cmd(FakeEvent()))
+        downloaded = []
+
+        async def boom_from_event(event):
+            downloaded.append("<from_event>")
+            return None
+
+        p.image_source.from_event = boom_from_event  # type: ignore[assignment]
+        p.image_source.has_image = lambda ev: True  # type: ignore[assignment]
+        out = collect(p.sou_cmd(FakeEvent()))
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0][0], "plain")
         self.assertEqual(out[0][1], SAUCENAO_KEY_MISSING_TEXT)
         self.assertIn("user.php?page=search-api", out[0][1])
+        self.assertEqual(downloaded, [], "未配置 key 时绝不能下载图片")
 
-    def test_access_control_covers_pixiv_cmd(self):
+    def test_access_control_covers_sou_cmd(self):
         p = self._plugin({"access_mode": "whitelist", "whitelist": [], "saucenao_api_key": "k"})
-        out = collect(p.pixiv_cmd(FakeEvent(umo="umo-A")))
+        out = collect(p.sou_cmd(FakeEvent(umo="umo-A")))
         self.assertEqual(out[0][1], ACCESS_DENIED_TEXT)
 
-    def test_access_control_allows_listed(self):
-        p = self._plugin({"access_mode": "whitelist", "whitelist": ["umo-A"], "saucenao_api_key": "k"})
-        # 放行：无图 → 给出用法提示（而非拒绝）
-        out = collect(p.pixiv_cmd(FakeEvent(umo="umo-A")))
+    def test_sou_cmd_no_image_no_args_gives_help(self):
+        p = self._plugin({"saucenao_api_key": "k"})
+        out = collect(p.sou_cmd(FakeEvent()))
+        self.assertEqual(out[0][1], HELP_TEXT)
+
+    def test_saucenao_no_image_fallback_still_reachable(self):
+        """结构上有图片、但取不到可用图片且非直链 → 回 SAUCENAO_NO_IMAGE_TEXT。"""
+        p = self._plugin({"saucenao_api_key": "k"})
+
+        async def none_from_event(event):
+            return None
+
+        p.image_source.from_event = none_from_event  # type: ignore[assignment]
+        out = collect(p._dispatch_saucenao(FakeEvent(), ""))
         self.assertEqual(out[0][1], SAUCENAO_NO_IMAGE_TEXT.format(p="/"))
 
     def test_help_subcommand(self):
         p = self._plugin({"saucenao_api_key": "k"})
-        out = collect(p.pixiv_cmd(FakeEvent(), args="帮助"))
-        self.assertIn("/搜P站", out[0][1])
+        out = collect(p.sou_cmd(FakeEvent(), args="帮助"))
+        self.assertIn("/搜图", out[0][1])
 
-    def test_pixiv_help_cmd(self):
+    def test_sou_help_cmd(self):
         p = self._plugin({})
-        out = collect(p.pixiv_help_cmd(FakeEvent()))
-        self.assertEqual(out[0][1], SAUCENAO_HELP_TEXT)
+        out = collect(p.sou_help_cmd(FakeEvent()))
+        self.assertEqual(out[0][1], HELP_TEXT)
 
-    def test_pixiv_help_respects_prefix(self):
+    def test_sou_help_respects_prefix(self):
         class Ctx:
             def get_config(self):
                 return {"wake_prefix": ["#"]}
         p = SoutuSearchPlugin(Ctx(), {})
-        self.assertIn("#搜P站", p._saucenao_help_text())
-        self.assertNotIn("/搜P站", p._saucenao_help_text())
+        self.assertIn("#搜图", p._help_text())
+        self.assertNotIn("/搜图", p._help_text())
 
-    def test_pixiv_help_cmd_access_denied(self):
+    def test_sou_help_cmd_access_denied(self):
         p = self._plugin({"access_mode": "whitelist", "whitelist": []})
-        out = collect(p.pixiv_help_cmd(FakeEvent(umo="umo-A")))
+        out = collect(p.sou_help_cmd(FakeEvent(umo="umo-A")))
         self.assertEqual(out[0][1], ACCESS_DENIED_TEXT)
 
 
@@ -667,20 +691,23 @@ class TestSaucenaoPluginCommands(unittest.TestCase):
 # ===========================================================================
 class TestSaucenaoHelp(unittest.TestCase):
     def test_default_constant(self):
-        self.assertIn("/搜P站", SAUCENAO_HELP_TEXT)
-        self.assertIn("/搜P站帮助", SAUCENAO_HELP_TEXT)
+        self.assertIn("/搜图", HELP_TEXT)
+        self.assertIn("/搜图帮助", HELP_TEXT)
+        self.assertNotIn("搜P站", HELP_TEXT)
 
     def test_render_with_prefix(self):
-        text = _render_saucenao_help("#")
-        self.assertIn("#搜P站", text)
-        self.assertNotIn("/搜P站", text)
+        text = _render_help("#")
+        self.assertIn("#搜图", text)
+        self.assertNotIn("/搜图", text)
 
     def test_render_empty_falls_back(self):
-        self.assertIn("/搜P站", _render_saucenao_help(""))
+        self.assertIn("/搜图", _render_help(""))
 
-    def test_main_help_mentions_pixiv(self):
-        from astrbot_plugin_soutu_search.main import HELP_TEXT
-        self.assertIn("/搜P站", HELP_TEXT)
+    def test_main_help_mentions_both_branches(self):
+        from astrbot_plugin_soutu_search.main import HELP_TEXT as HT
+        self.assertIn("SauceNAO", HT)
+        self.assertIn("Safebooru", HT)
+        self.assertIn("/搜本", HT)
 
 
 # ===========================================================================

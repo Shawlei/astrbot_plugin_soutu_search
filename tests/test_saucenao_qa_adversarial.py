@@ -1,4 +1,4 @@
-"""QA 独立对抗测试（Edward）：SauceNAO（搜P站）provider。
+"""QA 独立对抗测试（Edward）：SauceNAO（`搜图` 的以图反查分支）provider。
 
 本文件由 QA 独立编写，**不依赖**被测方的 `tests/test_saucenao.py` 断言，
 目的是证伪/确认以下离线可验证的关键点：
@@ -48,8 +48,8 @@ from astrbot_plugin_soutu_search.core.saucenao_client import (  # noqa: E402
 )
 from astrbot_plugin_soutu_search.main import (  # noqa: E402
     ACCESS_DENIED_TEXT,
+    HELP_TEXT,
     SAUCENAO_KEY_MISSING_TEXT,
-    SAUCENAO_NO_IMAGE_TEXT,
     SoutuSearchPlugin,
     _command_head,
 )
@@ -509,13 +509,22 @@ class _FakeEvent:
 
 
 class TestApiKeyMissingNoRequest(unittest.TestCase):
-    def test_no_network_when_key_missing(self):
+    def test_no_network_and_no_download_when_key_missing(self):
         p = SoutuSearchPlugin(object(), {})  # 无 key
         spy = RecordingSession()
         p.saucenao._session = spy
-        out = collect(p.pixiv_cmd(_FakeEvent()))
+        downloaded = []
+
+        async def boom_from_event(event):
+            downloaded.append("<from_event>")
+            return None
+
+        p.image_source.from_event = boom_from_event  # type: ignore[assignment]
+        p.image_source.has_image = lambda ev: True  # type: ignore[assignment]
+        out = collect(p.sou_cmd(_FakeEvent()))
         self.assertEqual(out[0][1], SAUCENAO_KEY_MISSING_TEXT)
         self.assertEqual(len(spy.calls), 0, "未配置 api_key 时绝不能发出网络请求")
+        self.assertEqual(downloaded, [], "未配置 api_key 时绝不能下载图片")
 
 
 # ===========================================================================
@@ -523,36 +532,47 @@ class TestApiKeyMissingNoRequest(unittest.TestCase):
 # ===========================================================================
 class TestCommandBehaviour(unittest.TestCase):
     def test_commands_recognized(self):
-        for t in ("/搜P站", "搜P站", "#搜P站", "/pixiv", "/saucenao",
-                  "/搜P站帮助", "/搜P站 猫娘", "/pixiv 猫娘", "#pixiv"):
+        for t in ("/搜图", "搜图", "#搜图", "/pixiv", "/saucenao",
+                  "/搜图帮助", "/搜图 猫娘", "/pixiv 猫娘", "#pixiv",
+                  "/pixivhelp", "/saucenaohelp"):
             self.assertIsNotNone(_command_head(t), f"应识别: {t!r}")
 
-    def test_human_text_not_command(self):
-        for t in ("搜P站真不错", "pixiv真好用", "pixiv站", "搜P站真不错啊", "saucenao很好用", "p站真好用"):
+    def test_removed_pixiv_cmd_not_command(self):
+        """0.5.0 起 ``搜P站`` / ``搜P站帮助`` 已移除。"""
+        for t in ("/搜P站", "搜P站", "#搜P站", "/搜P站帮助", "搜P站帮助x"):
             self.assertIsNone(_command_head(t), f"不应识别为指令: {t!r}")
 
-    def test_soutu_help_still_longest_first(self):
-        self.assertEqual(_command_head("/搜图帮助"), "搜图帮助")
-        self.assertEqual(_command_head("/搜P站帮助"), "搜P站帮助")
-        self.assertEqual(_command_head("/搜图"), "搜图")
-        self.assertEqual(_command_head("/搜P站"), "搜P站")
+    def test_human_text_not_command(self):
+        for t in ("搜图真有意思", "pixiv真好用", "pixiv站", "搜图真有意思啊",
+                  "saucenao很好用", "saucenao不错", "pixiv很好用", "soutubot很棒", "找图…"):
+            self.assertIsNone(_command_head(t), f"不应识别为指令: {t!r}")
 
-    def test_access_mode_consistency_pixiv_vs_soutu(self):
+    def test_help_names_longest_first(self):
+        self.assertEqual(_command_head("/搜图帮助"), "搜图帮助")
+        self.assertEqual(_command_head("/搜图"), "搜图")
+        self.assertEqual(_command_head("/pixivhelp"), "pixivhelp")
+        self.assertEqual(_command_head("/pixiv"), "pixiv")
+        self.assertEqual(_command_head("/saucenaohelp"), "saucenaohelp")
+        self.assertEqual(_command_head("/saucenao"), "saucenao")
+
+    def test_access_mode_consistency_sou_vs_book(self):
         cfg = {"access_mode": "whitelist", "whitelist": [], "saucenao_api_key": "k"}
         p = SoutuSearchPlugin(object(), cfg)
         # whitelist 空 → fail-closed，两条指令都应被拒
-        self.assertEqual(collect(p.pixiv_cmd(_FakeEvent()))[0][1], ACCESS_DENIED_TEXT)
         self.assertEqual(collect(p.sou_cmd(_FakeEvent()))[0][1], ACCESS_DENIED_TEXT)
+        self.assertEqual(collect(p.sou_help_cmd(_FakeEvent()))[0][1], ACCESS_DENIED_TEXT)
+        self.assertEqual(collect(p.book_cmd(_FakeEvent()))[0][1], ACCESS_DENIED_TEXT)
+        self.assertEqual(collect(p.book_help_cmd(_FakeEvent()))[0][1], ACCESS_DENIED_TEXT)
 
-    def test_access_mode_blacklist_blocks_pixiv(self):
+    def test_access_mode_blacklist_blocks_sou(self):
         cfg = {"access_mode": "blacklist", "blacklist": ["umo-A"], "saucenao_api_key": "k"}
         p = SoutuSearchPlugin(object(), cfg)
-        self.assertEqual(collect(p.pixiv_cmd(_FakeEvent(umo="umo-A")))[0][1], ACCESS_DENIED_TEXT)
+        self.assertEqual(collect(p.sou_cmd(_FakeEvent(umo="umo-A")))[0][1], ACCESS_DENIED_TEXT)
 
-    def test_pixiv_no_image_gives_usage(self):
+    def test_sou_no_image_no_args_gives_help(self):
         p = SoutuSearchPlugin(object(), {"saucenao_api_key": "k"})
-        out = collect(p.pixiv_cmd(_FakeEvent()))
-        self.assertEqual(out[0][1], SAUCENAO_NO_IMAGE_TEXT.format(p="/"))
+        out = collect(p.sou_cmd(_FakeEvent()))
+        self.assertEqual(out[0][1], HELP_TEXT)
 
 
 # ===========================================================================

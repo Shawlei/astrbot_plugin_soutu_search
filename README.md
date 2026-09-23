@@ -1,15 +1,14 @@
 # astrbot_plugin_soutu_search · AstrBot 搜图插件
 
-为 [AstrBot](https://github.com/Soulter/AstrBot) 提供搜图能力，**三条指令互斥、各司其职**：
+为 [AstrBot](https://github.com/Soulter/AstrBot) 提供搜图能力，**两条指令、各司其职**：
 
 - **搜本（以图搜本子）**：发送图片并用「搜本」指令 → 调用 [soutubot.moe](https://soutubot.moe)（搜图Bot酱）做相似图检索。**只接受图片**
-- **搜图（关键词搜图）**：`搜图 <关键词>` → 调用 [Safebooru](https://safebooru.org) DAPI 按标签检索。**只接受关键词**（不接受图片）
-- **搜P站（反查出处）**：发送图片并用「搜P站」指令 → 调用 [SauceNAO](https://saucenao.com) 反查图片出处/画师，**默认仅检索 Pixiv 库**
+- **搜图（自动判别）**：有图片（或图片链接）→ 调用 [SauceNAO](https://saucenao.com) 反查图片出处/画师（**默认仅检索 Pixiv 库**）；纯关键词 → 调用 [Safebooru](https://safebooru.org) DAPI 按标签检索
 
 > 默认采用「**只回文字与来源链接、不发送缩略图**」的安全策略，避免在群聊中触发平台风控。
 > 搜图**只能通过指令触发**：插件**不监听消息、不会自动搜图**，群内有人发图不会被自动识别。
 > 指令前缀**跟随 AstrBot 全局配置的命令前缀**（`wake_prefix`，默认 `/`）；下文示例以默认的 `/` 书写，
-> 若你把前缀配成 `#`，则实际命令是 `#搜本`、`#搜图`、`#搜P站`、`#搜本帮助` 等。
+> 若你把前缀配成 `#`，则实际命令是 `#搜本`、`#搜图`、`#搜本帮助` 等。
 
 ---
 
@@ -40,23 +39,24 @@
 |---|---|---|---|
 | `命令前缀 + 搜本` | `搜本子`、`soutu`、`找图` | **以图搜本子**（soutubot.moe，搜图Bot酱） | **只接受图片**：消息图片 / 引用图片 / `搜本 <图片链接>` |
 | `命令前缀 + 搜本帮助` | `搜本help`、`soutuhelp` | 输出「搜本」用法说明 | — |
-| `命令前缀 + 搜图` | 无 | **关键词搜图**（Safebooru），如 `/搜图 cat_ears` | **只接受关键词**，**不接受图片** |
-| `命令前缀 + 搜图帮助` | `搜图help` | 输出「搜图」用法说明 | — |
-| `命令前缀 + 搜P站` | `pixiv`、`saucenao` | **搜 P 站**：SauceNAO 反查出处/画师（默认仅 Pixiv 库；需配置 API Key） | 图片 / 引用图片 / `搜P站 <图片链接>` |
-| `命令前缀 + 搜P站帮助` | `搜P站help`、`saucenaohelp` | 输出「搜 P 站」用法说明 | — |
+| `命令前缀 + 搜图` | `pixiv`、`saucenao` | **自动判别**：有图片/图片链接 → **SauceNAO 反查 P 站出处**（默认仅 Pixiv 库，需配置 API Key）；纯关键词 → **Safebooru 关键词搜图** | 图片 / 引用图片 / `搜图 <图片链接>` / `搜图 <关键词>` |
+| `命令前缀 + 搜图帮助` | `搜图help`、`pixivhelp`、`saucenaohelp` | 输出「搜图」用法说明（含两条路） | — |
 
-- 三条指令**互斥**：`搜本` 只以图搜图、`搜图` 只搜关键词、`搜P站` 只反查 Pixiv 出处，不会互相抢活。
+- 两条指令**各司其职**：`搜本` 只以图搜图（soutubot），`搜图` 有图反查 P 站、无图则按关键词搜图。
 - 搜图**只能通过指令触发**：单纯发图片（不带指令）**不会**搜索（插件不监听消息）。
 - `/搜本` 不带图片（也无图片链接）时：纯关键词会回一句「只支持图片」的引导、**不发起任何搜索**；完全无参数则回「搜本帮助」。
-- `/搜图` 收到图片 / 图片链接时：回一句「只做关键词搜图」的引导、**不下载图片、不发起搜索**。
+- `/搜图` **自动判别**：有图片 / 图片链接 → SauceNAO 反查；纯关键词 → Safebooru。未配置 `saucenao_api_key` 时，
+  图片分支会**先回一条引导再返回**，**不会下载图片**（省带宽、省配额）；关键词分支**不需要** API Key，仍可正常使用。
 - 文本式子帮助：任一指令后跟 `帮助` / `help` / `-h` / `--help` / `用法` 也会输出对应帮助（如 `/搜本 帮助`）。
 
-> **⚠️ 破坏性变更（0.4.0）**：0.3.x 的 `搜图` 是「自动判别」指令 —— 附图即走 soutubot 以图搜图，
-> 带文本则走 Safebooru 关键词。自 **0.4.0** 起该行为被**拆分**：
-> - soutubot 以图搜图**只能由 `搜本` 触发**（旧别名 `soutu` / `找图` 也已改挂到 `搜本`）；
-> - 旧用法 `搜图` + 图片（或图片链接）**不再搜图**，改为回一句引导提示，提示改用 `搜本` 或 `搜P站`。
+> **⚠️ 破坏性变更（0.5.0）**：`搜P站` 与 `搜P站帮助` 两条指令**已移除**，其能力并入 `搜图`：
+> - `搜图` 恢复为「**自动判别**」：有图片 / 图片链接 → SauceNAO 反查 P 站；纯关键词 → Safebooru 关键词搜图；
+> - 旧别名 `pixiv` / `saucenao` 现为 `搜图` 的别名；`pixivhelp` / `saucenaohelp` 现为 `搜图帮助` 的别名
+>   （旧的 `搜P站help` 不再可用）；
+> - 升级后请把「反查 P 站出处」的指令从 `搜P站` 换成 `搜图`（附图或图片链接即可）。
 >
-> 升级后请把「发图搜本子」的习惯指令从 `搜图` 换成 `搜本`。
+> **⚠️ 历史破坏性变更（0.4.0）**：0.3.x 的 `搜图` 是「自动判别」指令 —— 附图即走 soutubot 以图搜图。
+> 自 0.4.0 起 soutubot 以图搜图改由 `搜本` 独占触发，该拆分在 0.5.0 中保持。
 
 ### 🔤 命令前缀跟随（`wake_prefix`）
 
@@ -85,7 +85,7 @@
 | `safebooru_rating` | string(`safe`/`all`) | `safe` | 关键词搜图评级过滤 |
 | `soutu_base_url` | string | `https://soutubot.moe` | 以图搜图服务地址 |
 | `safebooru_base_url` | string | `https://safebooru.org` | 关键词搜图服务地址 |
-| `saucenao_api_key` | string（`secret`） | `""` | **搜 P 站** 的 SauceNAO API Key（申请：<https://saucenao.com/user.php?page=search-api>）。未填写时「搜P站」给出引导、不发起请求 |
+| `saucenao_api_key` | string（`secret`） | `""` | **搜图（以图反查）** 的 SauceNAO API Key（申请：<https://saucenao.com/user.php?page=search-api>）。未填写时 `搜图` 的图片分支给出引导、不下载、不发起请求；关键词分支不需要 |
 | `saucenao_base_url` | string | `https://saucenao.com` | SauceNAO 接口地址，可改镜像/反代以应对网络问题 |
 | `saucenao_db_mask` | int | `96` | 数据库位掩码。**`96` = 仅 Pixiv**（`0x20|0x40`）；`0` = 不限库（搜全部） |
 | `saucenao_min_similarity` | int | `50` | SauceNAO 最低相似度（0-100）；与 soutubot 的 `min_score` 体系不同，故独立配置 |
@@ -245,28 +245,29 @@
 
 ---
 
-## 🎯 SauceNAO / 搜 P 站
+## 🎯 SauceNAO / 搜图（以图反查 P 站）
 
-「搜P站」用 [SauceNAO](https://saucenao.com) 做**以图反查**，专治「这张图出自哪个 Pixiv 作品 / 谁画的」。
+`搜图`（附图）用 [SauceNAO](https://saucenao.com) 做**以图反查**，专治「这张图出自哪个 Pixiv 作品 / 谁画的」。
 
 ### 与 soutubot 的区别
 
-| | soutubot.moe（`搜本`） | SauceNAO（`搜P站`） |
+| | soutubot.moe（`搜本`） | SauceNAO（`搜图` + 图片/图片链接） |
 |---|---|---|
 | 定位 | 偏**本子 / 里番**截图溯源（nhentai、ehentai、禁漫等） | 偏**原创插画站**（Pixiv 等）出处 / 画师反查 |
-| 触发 | `搜本`（附图），别名 `搜本子` / `soutu` / `找图` | `搜P站`（附图），别名 `pixiv` / `saucenao` |
+| 触发 | `搜本`（附图），别名 `搜本子` / `soutu` / `找图` | `搜图`（附图），别名 `pixiv` / `saucenao` |
 | 是否要 Key | 不需要 | **需要 API Key** |
 | 可限定库 | 否 | **是**（`saucenao_db_mask` 位掩码） |
 | 额度 | 无明确限制 | **150 次/天、4 次/30 秒**（免费账户） |
 
-> 三条指令**刻意分开、互不并跑**：SauceNAO 限额很紧（4 次/30 秒），若挂在每次 `搜本` 上并跑会迅速耗尽配额；
-> `搜图` 则为纯关键词通道，与两者职责正交。
+> `搜图` 的两条分支**自动判别、互不干扰**：有图片 / 图片链接时才走 SauceNAO 反查（限额很紧，4 次/30 秒）；
+> 纯关键词则走 Safebooru，与 SauceNAO 配额无关。
 
 ### 配置 API Key
 
 1. 到 <https://saucenao.com/user.php?page=search-api> 注册并获取 API Key；
 2. 在插件配置中填入 `saucenao_api_key`（该字段为密文 `secret`）。
-3. **未配置**时，「搜P站」会直接回一条引导提示，**不会**发起请求（避免无谓消耗）。
+3. **未配置**时，`搜图` 的**图片分支**会直接回一条引导提示、**不会下载图片也不会发起请求**（避免无谓消耗）；
+   关键词分支不受影响，仍可正常搜图。
 
 ### `dbmask` 用法与常用掩码
 
@@ -312,7 +313,7 @@
 
 ```
 astrbot_plugin_soutu_search/
-│   ├── main.py                  # 插件入口：三条互斥指令注册、前缀跟随、访问控制、结果回复
+│   ├── main.py                  # 插件入口：两条指令注册、前缀跟随、访问控制、结果回复
 ├── metadata.yaml                # 插件元数据
 ├── _conf_schema.json            # 配置 Schema
 ├── requirements.txt             # 依赖声明
@@ -334,7 +335,7 @@ astrbot_plugin_soutu_search/
 │   ├── test_http_errors.py      # HTTP 异常与错误降级测试
 │   ├── test_local_image_roots.py# 本地图片来源白名单（allowed_roots / temp 放行）测试
 │   ├── test_wake_prefix.py      # 命令前缀跟随（wake_prefix）测试
-│   ├── test_command_split.py    # 指令拆分（搜本/搜图/搜P站 三条互斥指令）测试
+│   ├── test_command_split.py    # 指令映射（搜本/搜图 两条指令 + 搜图自动判别）测试
 │   ├── test_saucenao.py         # SauceNAO provider（掩码/解析/配额/指令/访问控制）测试
 │   └── live_saucenao_check.py   # SauceNAO 真人联网校验脚本（需可联网环境，见下）
 └── README.md
@@ -390,12 +391,12 @@ class SourceOutcome:
 
 ### Safebooru（关键词搜图 / `搜图`）
 
-- 仅由 `搜图` 触发，且**只接受关键词**（收到图片 / 图片链接时回引导提示，不下载、不搜索）
+- 由 `搜图` 的**关键词分支**触发（无图片、无图片链接时才走此路），**不需要** API Key
 - `pid` 从 0 开始；多标签用 `+` 连接
 - `rating` 为 `safe` 时过滤 `sensitive` / `questionable` / `explicit`
 - 无结果时返回空数组或空响应体，均容错处理（不抛 `JSONDecodeError`）
 
-### SauceNAO（搜 P 站）
+### SauceNAO（`搜图` 的以图反查分支）
 
 - 请求：`POST /search.php`（multipart 字段名 `file`）+ 查询参数 `output_type=2 / dbmask / numres / minsim / hide / api_key`
 - 解析容错（真实会踩的坑）：
@@ -462,8 +463,9 @@ python tests/live_saucenao_check.py --self-test --api-key 你的key
 - QQ 图片下载存在防盗链，已做 UA/Referer 两级重试，极端情况下仍可能失败并降级为友好提示。
 - **命令前缀**跟随 AstrBot 全局 `wake_prefix`；若插件读取不到该配置（旧版本/异常），
   会回退到通用前缀正则（兼容 `/`、`!`、`。` 等），仅帮助文案的前缀可能与实际不同。
-- **SauceNAO（搜P站）**：
-  - **需要 API Key**（`saucenao_api_key`）；未配置时指令直接给出引导、不发起请求。
+- **SauceNAO（`搜图` 的以图反查分支）**：
+  - **需要 API Key**（`saucenao_api_key`）；未配置时 `搜图` 的图片分支直接给出引导、
+    **不下载图片、不发起请求**（关键词分支不受影响）。
   - **配额紧**：免费账户 150 次/天、4 次/30 秒；耗尽时插件会明确提示，而非「搜不到图」。
   - **连通性**：中国大陆访问 `saucenao.com` 通常需要代理（遵循 AstrBot 全局 `http_proxy`），
     或用 `saucenao_base_url` 指向镜像 / 反代。
@@ -472,8 +474,11 @@ python tests/live_saucenao_check.py --self-test --api-key 你的key
     可联网机器上复验（含 multipart 字段名 `file`、`dbmask=96` 是否确只返回 Pixiv、配额字段等）。
   - **`dbmask=0`（不限库）行为待真机确认**：插件在掩码为 `0` 时**不发送** `dbmask` 参数
     （按"省略即全库"推断），避免误发 `dbmask=0`（位掩码惯例下可能表示"不启用任何库"）导致搜不到。
-  - `搜本` / `搜P站` 均支持 **`<指令> <图片链接>`** 直链（走 `image_source` 的协议白名单 + SSRF 校验）；
+  - `搜本` / `搜图` 均支持 **`<指令> <图片链接>`** 直链（走 `image_source` 的协议白名单 + SSRF 校验）；
     链接不可达 / 非图片 / 内网地址时给出明确提示，不会静默失败。
-  - `搜图` **不接受图片**：收到图片或图片链接时只回引导提示，**不下载**（省带宽，同时收敛 SSRF 面）。
-- **破坏性变更（0.4.0）**：`搜图` 的「自动判别」行为已拆分 —— soutubot 以图搜图改由 `搜本` 独占触发；
-  旧写法 `搜图` + 图片（或图片链接）不再搜图，改为回引导提示。升级请改用 `搜本` / `搜P站`。
+  - `搜图` 未配置 API Key 时，图片分支**先提示后返回**，绝不下载图片（收敛 SSRF 面、省带宽与配额）。
+- **破坏性变更（0.5.0）**：`搜P站` / `搜P站帮助` 已移除，能力并入 `搜图`（自动判别）：
+  - `pixiv` / `saucenao` 现为 `搜图` 的别名，`pixivhelp` / `saucenaohelp` 现为 `搜图帮助` 的别名；
+  - 旧写法 `搜P站` + 图片请改为 `搜图` + 图片（或 `搜图 <图片链接>`）。
+- **历史破坏性变更（0.4.0）**：`搜图` 曾拆为纯关键词指令、soutubot 以图搜图改由 `搜本` 独占触发；
+  0.5.0 保持 `搜本` 独占 soutubot，仅把 SauceNAO 反查重新并回 `搜图`。
