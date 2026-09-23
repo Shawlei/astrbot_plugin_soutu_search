@@ -1,4 +1,4 @@
-"""QA 联网端到端：驱动插件 on_message 走完整链路（访问控制放行 → 取图 → 搜索 → 回复）。
+"""QA 联网端到端：驱动插件 ``sou_cmd`` 指令走完整链路（访问控制放行 → 取图 → 搜索 → 回复）。
 
 使用 recon/test.jpg 的 data URI 作为图片来源，避免依赖 QQ 图床；真实访问 soutubot.moe。
 运行::
@@ -19,21 +19,21 @@ for _p in (str(PLUGIN_ROOT.parent), str(PLUGIN_ROOT)):
 
 import tests.test_core as _stub  # noqa: E402,F401
 
-from astrbot_plugin_soutu_search.main import SoutuSearchPlugin  # noqa: E402
+from astrbot_plugin_soutu_search.main import ACCESS_DENIED_TEXT, SoutuSearchPlugin  # noqa: E402
 
 TEST_IMG = PLUGIN_ROOT.parent / "recon" / "test.jpg"
 DATA_URI = "data:image/jpeg;base64," + base64.b64encode(TEST_IMG.read_bytes()).decode()
 
 
 class Ev:
-    def __init__(self, umo):
+    def __init__(self, umo, text="/搜图"):
         self.unified_msg_origin = umo
-        self.message_str = ""
+        self.message_str = text
         self.message_obj = type("M", (), {"group_id": None, "message_id": "m1"})()
         self.message = []
 
     def get_message_str(self):
-        return ""
+        return self.message_str
 
     def plain_result(self, t):
         return ("plain", t)
@@ -43,13 +43,10 @@ class Ev:
 
 
 async def main():
-    # 访问控制：白名单放行 umo-A；自动搜图开启
+    # 访问控制：白名单放行 umo-A（仅指令通道）
     p = SoutuSearchPlugin(object(), {
         "access_mode": "whitelist",
         "whitelist": ["umo-A"],
-        "access_scope": "all",
-        "enable_auto_search": True,
-        "auto_search_cooldown": 0,
         "cache_ttl": 0,
         "request_timeout": 60,
     })
@@ -60,7 +57,7 @@ async def main():
 
     p.image_source.from_event = fake_from_event  # type: ignore
 
-    out_allowed = [x async for x in p.on_message(Ev("umo-A"))]
+    out_allowed = [x async for x in p.sou_cmd(Ev("umo-A"), "")]
     print(f"[放行会话] 输出条数={len(out_allowed)}")
     if out_allowed:
         blocks = out_allowed[0]
@@ -73,9 +70,10 @@ async def main():
     else:
         print("  !!! 放行会话未产出任何回复（可能搜索失败或无命中）")
 
-    # 受限会话（白名单外）→ 必须零输出零请求
-    out_denied = [x async for x in p.on_message(Ev("umo-B"))]
-    print(f"[受限会话] 输出条数={len(out_denied)}（期望 0）")
+    # 受限会话（白名单外）→ 恰好一条拒绝提示
+    out_denied = [x async for x in p.sou_cmd(Ev("umo-B"), "")]
+    denied_ok = len(out_denied) == 1 and out_denied[0][1] == ACCESS_DENIED_TEXT
+    print(f"[受限会话] 输出条数={len(out_denied)}（期望 1，且为拒绝提示={denied_ok}）")
 
     await p.terminate()
 

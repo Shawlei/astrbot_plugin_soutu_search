@@ -446,6 +446,15 @@ class ImageSource:
                 continue  # 不同盘符，必然不在该根目录内
         return False
 
+    def _allowed_roots_display(self) -> str:
+        """返回当前允许根目录的可读列表（用于拒绝时的诊断日志）。
+
+        便于一眼区分「配置漏了目录」还是「真的越权访问」：日志同时给出被拒路径与全部允许根目录。
+        """
+        if not self.allowed_roots:
+            return "（空：默认拒绝一切本地文件）"
+        return "; ".join(str(root) for root in self.allowed_roots)
+
     async def fetch_url(self, url: str, referer: str | None = None, max_redirects: int = 5) -> bytes:
         """下载 URL 图片，返回 bytes。
 
@@ -549,7 +558,10 @@ class ImageSource:
         if not path.exists():
             raise FileNotFoundError(f"本地图片不存在: {path_str}")
         if not self._within_allowed(path):
-            raise PermissionError(f"本地图片路径不在允许目录内，已拒绝: {path_str}")
+            raise PermissionError(
+                f"本地图片路径不在允许目录内，已拒绝: {path_str}；"
+                f"当前允许根目录: {self._allowed_roots_display()}"
+            )
         async with aiofiles.open(path, "rb") as handle:
             data = await handle.read()
         mime = self._validate_image(data)

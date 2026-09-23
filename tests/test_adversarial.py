@@ -48,7 +48,7 @@ from astrbot_plugin_soutu_search.core.soutu_client import (  # noqa: E402
 )
 from astrbot_plugin_soutu_search.main import (  # noqa: E402
     SoutuSearchPlugin,
-    _is_command_message,
+    _command_head,
 )
 
 RECON = PLUGIN_ROOT.parent / "recon"
@@ -401,7 +401,6 @@ class TestConfigAndSpec(unittest.TestCase):
         p = SoutuSearchPlugin(object(), {})
         self.assertEqual(p.result_count, 3)
         self.assertEqual(p.cache_ttl, 3600)
-        self.assertEqual(p.auto_search_cooldown, 30)
 
     def test_no_requests_dependency(self):
         glob = list(PLUGIN_ROOT.rglob("*.py"))
@@ -469,10 +468,10 @@ class TestCacheAndCooldown(unittest.TestCase):
         true_cases = ["/搜图", "/搜图 cat", "搜图", "。搜图 x", "/找图 y",
                       "/soutu z", "/搜图帮助", "!搜图"]
         for t in true_cases:
-            self.assertTrue(_is_command_message(ev(t)), f"应识别为指令: {t!r}")
+            self.assertTrue(_command_head(t) is not None, f"应识别为指令: {t!r}")
         false_cases = ["普通聊天", "帮我搜图", "/其它指令"]
         for t in false_cases:
-            self.assertFalse(_is_command_message(ev(t)), f"不应识别为指令: {t!r}")
+            self.assertFalse(_command_head(t) is not None, f"不应识别为指令: {t!r}")
 
     def test_command_attached_forms_detected(self):
         """[工程师已修复 #5] 紧贴指令名的形式也必须被识别为指令（消除重复回复风险）。"""
@@ -483,82 +482,9 @@ class TestCacheAndCooldown(unittest.TestCase):
             return E()
 
         risky = ["/搜图cat", "/搜图http://x", "搜图帮助x", "/soutuhelp"]
-        missed = [t for t in risky if not _is_command_message(ev(t))]
+        missed = [t for t in risky if _command_head(t) is None]
         # [工程师已修复 #5] 紧贴指令名的形式也必须识别为指令 → missed 应为空
         self.assertEqual(missed, [], f"应全部识别为指令，实际漏判: {missed}")
-
-
-class TestCooldownBehavior(unittest.TestCase):
-    """自动搜图冷却：同会话跳过、异会话独立。"""
-
-    def _plugin_with_fake_search(self):
-        p = SoutuSearchPlugin(object(), {"auto_search_cooldown": 60, "cache_ttl": 0})
-        calls = {"n": 0}
-
-        async def fake_from_event(event):
-            return ImagePayload(data=b"img", mime="image/jpeg", filename="q.jpg")
-
-        async def fake_search(*a, **k):
-            calls["n"] += 1
-            return SourceOutcome(results=[SearchResult("T", "S", "https://u", None, 90.0, {})])
-
-        p.image_source.from_event = fake_from_event  # type: ignore
-        p.soutu.search = fake_search  # type: ignore
-
-        class Ev:
-            def __init__(self, sess):
-                self.unified_msg_origin = sess
-                self.message_str = ""
-                self.emitted = []
-
-            def get_message_str(self):
-                return self.message_str
-
-            def plain_result(self, t):
-                self.emitted.append(("plain", t))
-                return ("plain", t)
-
-            def chain_result(self, c):
-                self.emitted.append(("chain", c))
-                return ("chain", c)
-
-        return p, calls, Ev
-
-    def test_same_session_second_call_skipped(self):
-        p, calls, Ev = self._plugin_with_fake_search()
-
-        async def go():
-            e = Ev("sess-1")
-            r1 = [x async for x in p.on_message(e)]
-            r2 = [x async for x in p.on_message(Ev("sess-1"))]
-            return r1, r2
-
-        r1, r2 = run(go())
-        self.assertTrue(r1, "首次应回复")
-        self.assertEqual(r2, [], "冷却期内第二次应静默跳过")
-        self.assertEqual(calls["n"], 1, "冷却期内不应再次请求接口")
-
-    def test_different_sessions_independent(self):
-        p, calls, Ev = self._plugin_with_fake_search()
-
-        async def go():
-            [x async for x in p.on_message(Ev("sess-A"))]
-            [x async for x in p.on_message(Ev("sess-B"))]
-
-        run(go())
-        self.assertEqual(calls["n"], 2, "不同会话互不影响，应各自请求")
-
-    def test_command_message_not_auto_replied(self):
-        p, calls, Ev = self._plugin_with_fake_search()
-
-        async def go():
-            e = Ev("s1")
-            e.message_str = "/搜图"  # 指令消息
-            return [x async for x in p.on_message(e)]
-
-        out = run(go())
-        self.assertEqual(out, [], "指令消息不应被 on_message 处理，避免重复回复")
-        self.assertEqual(calls["n"], 0)
 
 
 # ===========================================================================

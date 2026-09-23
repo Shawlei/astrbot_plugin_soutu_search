@@ -1,10 +1,4 @@
 {
-  "enable_auto_search": {
-    "description": "自动搜图",
-    "hint": "开启后，群聊/私聊中有人发图片会自动触发以图搜图（受下方冷却时间限制）",
-    "type": "bool",
-    "default": true
-  },
   "nsfw_send_image": {
     "description": "发送缩略图（NSFW 开关）",
     "hint": "默认关闭：回复只包含文字与来源链接，不含任何图片组件，避免触发平台风控。开启后会在回复中附带缩略图",
@@ -42,17 +36,6 @@
       "min": 0,
       "max": 100,
       "step": 1
-    }
-  },
-  "auto_search_cooldown": {
-    "description": "自动搜图冷却（秒）",
-    "hint": "同一会话（群/私聊）内两次自动搜图的最小间隔，防止刷屏",
-    "type": "int",
-    "default": 30,
-    "slider": {
-      "min": 0,
-      "max": 600,
-      "step": 5
     }
   },
   "cache_ttl": {
@@ -139,14 +122,10 @@
     "type": "list",
     "default": []
   },
-  "access_scope": {
-    "description": "访问控制范围",
-    "hint": "all = 指令与自动搜图都受白/黑名单限制（默认）；auto = 仅限制自动搜图、指令照常响应（适合「群内不希望机器人自动刷图，但允许手动 /搜图」）。仅当 access_mode 不为 all 时有意义",
-    "type": "string",
-    "options": [
-      "all",
-      "auto"
-    ],
-    "default": "all"
+  "extra_allowed_roots": {
+    "description": "额外允许的本地图片根目录",
+    "hint": "一般无需填写。插件默认已允许读取自身数据目录与 AstrBot 的 data/temp（AstrBot 接收图片后的落盘位置）。仅当你的部署因 AstrBot 版本差异导致临时图片目录位置不同、出现「本地图片路径不在允许目录内」时才在此追加目录（每项填一个绝对路径）。出于安全考虑，请勿填写包含插件配置/密钥的目录",
+    "type": "list",
+    "default": []
   }
 }

@@ -1,11 +1,10 @@
 """P2 修复回归测试（工程师）。
 
-覆盖 team-lead 回派的 7 项 P2 修复：
+覆盖 team-lead 回派的修复项：
 - #1 soutubot 200+非 JSON → 统一包装 RuntimeError
 - #2 回复正文长度截断
 - #3 缓存移除死代码锁
-- #4 冷却表惰性清理与容量上限
-- #5 指令消息确定性判重（紧贴形式 + 登记表）
+- #5 指令判定（紧贴形式误报防护）
 - #6 图片来源限制（协议白名单 / 内网拦截 / 目录白名单）
 - #7 图片大小与魔数校验
 
@@ -21,7 +20,6 @@ import base64
 import json
 import shutil
 import sys
-import time
 import unittest
 from pathlib import Path
 
@@ -39,15 +37,13 @@ from astrbot_plugin_soutu_search.core.formatter import (  # noqa: E402
     format_outcome,
 )
 from astrbot_plugin_soutu_search.core.image_source import (  # noqa: E402
-    ImagePayload,
     ImageSource,
     detect_image_mime,
 )
 from astrbot_plugin_soutu_search.core.soutu_client import SoutuClient  # noqa: E402
 from astrbot_plugin_soutu_search.main import (  # noqa: E402
     SoutuSearchPlugin,
-    _RecentMessageRegistry,
-    _is_command_message,
+    _command_head,
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -197,87 +193,14 @@ class TestCacheNoDeadLock(unittest.TestCase):
 
 
 # ===========================================================================
-# #4 冷却表清理
+# #5 指令判定（紧贴形式误报防护）
 # ===========================================================================
-class TestCooldownPrune(unittest.TestCase):
-    def test_expired_entries_pruned(self):
-        p = SoutuSearchPlugin(object(), {"auto_search_cooldown": 10})
-        now = time.monotonic()
-        p._auto_cooldown = {f"s{i}": now - 100 for i in range(10)}
-        p._prune_cooldowns(now)
-        self.assertEqual(len(p._auto_cooldown), 0)
-
-    def test_capacity_enforced(self):
-        p = SoutuSearchPlugin(object(), {"auto_search_cooldown": 3600})
-        p._cooldown_max_entries = 5
-        now = time.monotonic()
-        p._auto_cooldown = {f"t{i}": now - i * 0.01 for i in range(10)}
-        p._prune_cooldowns(now)
-        self.assertLessEqual(len(p._auto_cooldown), 5)
-
-
-# ===========================================================================
-# #5 指令判重
-# ===========================================================================
-class TestCommandDedupe(unittest.TestCase):
+class TestCommandDetection(unittest.TestCase):
     def test_attached_forms_detected(self):
-        def ev(text):
-            class E:
-                def get_message_str(self):
-                    return text
-            return E()
-
         for t in ["/搜图cat", "/搜图http://x", "搜图帮助x", "/soutuhelp", "/搜图", "。搜图 x"]:
-            self.assertTrue(_is_command_message(ev(t)), f"应识别为指令: {t!r}")
+            self.assertTrue(_command_head(t) is not None, f"应识别为指令: {t!r}")
         for t in ["普通聊天", "帮我搜图", "/其它指令"]:
-            self.assertFalse(_is_command_message(ev(t)), f"不应识别为指令: {t!r}")
-
-    def test_registry_ttl_and_capacity(self):
-        reg = _RecentMessageRegistry(maxsize=3, ttl=100)
-        for i in range(5):
-            reg.add(("s", f"m{i}"))
-        self.assertLessEqual(len(reg._store), 3)
-        # 命中即消费
-        reg.add(("s", "x"))
-        self.assertTrue(reg.contains(("s", "x")))
-        self.assertFalse(reg.contains(("s", "x")))
-
-    def test_registry_expiry(self):
-        reg = _RecentMessageRegistry(maxsize=100, ttl=0.02)
-        reg.add(("s", "m"))
-        time.sleep(0.05)
-        self.assertFalse(reg.contains(("s", "m")))
-
-    def test_on_message_skips_registered(self):
-        p = SoutuSearchPlugin(object(), {"auto_search_cooldown": 0, "cache_ttl": 0})
-
-        async def fake_from_event(event):
-            return ImagePayload(data=PNG, mime="image/png", filename="q.png")
-
-        p.image_source.from_event = fake_from_event  # type: ignore
-
-        class Ev:
-            def __init__(self, sess, mid):
-                self.unified_msg_origin = sess
-                self.message_str = ""
-                self.message_obj = type("M", (), {"message_id": mid})()
-
-            def get_message_str(self):
-                return self.message_str
-
-            def plain_result(self, t):
-                return ("plain", t)
-
-            def chain_result(self, c):
-                return ("chain", c)
-
-        e = Ev("s-reg", "mid-1")
-        p._mark_handled(e)  # 模拟 handler 已处理
-
-        async def go():
-            return [x async for x in p.on_message(e)]
-
-        self.assertEqual(run(go()), [], "已登记消息不应被自动监听重复回复")
+            self.assertFalse(_command_head(t) is not None, f"不应识别为指令: {t!r}")
 
 
 # ===========================================================================
@@ -516,31 +439,25 @@ class TestRedirectSafety(unittest.TestCase):
 # 第二轮 P2-1：指令判定精确性（紧贴识别 + 误报消除）
 # ===========================================================================
 class TestCommandPrecision(unittest.TestCase):
-    def _ev(self, text):
-        class E:
-            def get_message_str(self):
-                return text
-        return E()
-
     def test_should_be_command(self):
         for t in ("/搜图", "/搜图cat", "/搜图http://x", "搜图帮助x", "/soutuhelp",
                   "。搜图 x", "!找图", "搜图 cat"):
-            self.assertTrue(_is_command_message(self._ev(t)), f"应识别为指令: {t!r}")
+            self.assertTrue(_command_head(t) is not None, f"应识别为指令: {t!r}")
 
     def test_should_not_be_command(self):
         for t in ("搜图真有意思", "soutubot很棒", "找图…", "搜图帮助…",
                   "普通聊天", "帮我搜图", "搜索图片", "/其它指令"):
-            self.assertFalse(_is_command_message(self._ev(t)), f"不应识别为指令: {t!r}")
+            self.assertFalse(_command_head(t) is not None, f"不应识别为指令: {t!r}")
 
     def test_cjk_keyword_args_are_commands(self):
-        """回归：带中文关键词参数（空白分隔）的指令必须被识别（否则会与自动搜图重复回复）。"""
+        """回归：带中文关键词参数（空白分隔）的指令必须被识别。"""
         for t in ("/搜图 初音未来", "/搜图 甘雨", "/找图 蔚蓝档案", "搜图 初音未来",
                   "/搜图  双空格中文", "/搜图 中文关键词 https://x.com/a.jpg",
                   "/搜图 http://a.com/x.jpg"):
-            self.assertTrue(_is_command_message(self._ev(t)), f"应识别为指令: {t!r}")
+            self.assertTrue(_command_head(t) is not None, f"应识别为指令: {t!r}")
 
     def test_acceptance_table(self):
-        """team-lead 第三轮验收表逐条核对。"""
+        """team-lead 验收表逐条核对。"""
         expect_true = [
             "/搜图", "/搜图cat", "/soutuhelp", "搜图帮助x", "。搜图 x", "!找图",
             "/搜图 http://a.com/x.jpg",
@@ -552,9 +469,9 @@ class TestCommandPrecision(unittest.TestCase):
             "搜图帮助…", "找图…",
         ]
         for t in expect_true:
-            self.assertTrue(_is_command_message(self._ev(t)), f"[验收] 应为 True: {t!r}")
+            self.assertTrue(_command_head(t) is not None, f"[验收] 应为 True: {t!r}")
         for t in expect_false:
-            self.assertFalse(_is_command_message(self._ev(t)), f"[验收] 应为 False: {t!r}")
+            self.assertFalse(_command_head(t) is not None, f"[验收] 应为 False: {t!r}")
 
     def test_cjk_keyword_arg_recovered(self):
         """参数还原也应拿到中文关键词。"""
@@ -610,94 +527,6 @@ class TestTruncationExtremes(unittest.TestCase):
         self.assertFalse(any(b["type"] == "image" for b in blocks))
         self.assertNotIn("leak.jpg", joined)
         self.assertLessEqual(len(joined), 100)
-
-
-# ===========================================================================
-# 第二轮 P2-3：message_id 缺失时的判重不得误伤
-# ===========================================================================
-class TestMessageKeyFallback(unittest.TestCase):
-    def test_no_id_keys_are_unique(self):
-        p = SoutuSearchPlugin(object(), {})
-
-        class NoIdEv:
-            unified_msg_origin = "grp-x"
-            message_str = ""
-            message_obj = type("M", (), {})()
-
-            def get_message_str(self):
-                return ""
-
-        e1 = NoIdEv()
-        e2 = NoIdEv()
-        k1 = p._message_key(e1)
-        k2 = p._message_key(e2)
-        self.assertNotEqual(k1, k2, "无 message_id 时不同消息不得共用同一判重键")
-        # 同一对象重复计算应稳定
-        self.assertEqual(p._message_key(e1), k1)
-
-    def test_mark_then_second_no_id_message_not_skipped(self):
-        p = SoutuSearchPlugin(object(), {"auto_search_cooldown": 0, "cache_ttl": 0})
-
-        async def fake_from_event(event):
-            return ImagePayload(data=PNG, mime="image/png", filename="q.png")
-
-        async def fake_search(*a, **k):
-            return SourceOutcome(results=[SearchResult("T", "S", "https://u", None, 90.0, {})])
-
-        p.image_source.from_event = fake_from_event  # type: ignore
-        p.soutu.search = fake_search  # type: ignore
-
-        class NoIdEv:
-            unified_msg_origin = "grp-1"
-            message_str = ""
-            message_obj = type("M", (), {})()
-
-            def get_message_str(self):
-                return ""
-
-            def plain_result(self, t):
-                return ("plain", t)
-
-            def chain_result(self, c):
-                return ("chain", c)
-
-        p._mark_handled(NoIdEv())  # 模拟一条无 id 的指令消息被登记
-
-        async def go():
-            return [x async for x in p.on_message(NoIdEv())]
-
-        out = run(go())
-        self.assertNotEqual(out, [], "同会话后续无 id 消息不应被误判为已处理而跳过")
-
-    def test_same_object_still_deduped(self):
-        p = SoutuSearchPlugin(object(), {"auto_search_cooldown": 0, "cache_ttl": 0})
-
-        async def fake_from_event(event):
-            return ImagePayload(data=PNG, mime="image/png", filename="q.png")
-
-        p.image_source.from_event = fake_from_event  # type: ignore
-
-        class Ev:
-            unified_msg_origin = "s1"
-            message_str = ""
-            message_obj = type("M", (), {})()
-
-            def get_message_str(self):
-                return ""
-
-            def plain_result(self, t):
-                return ("plain", t)
-
-            def chain_result(self, c):
-                return ("chain", c)
-
-        e = Ev()
-        p._mark_handled(e)  # 与随后 on_message 传入的是同一对象
-
-        async def go():
-            return [x async for x in p.on_message(e)]
-
-        self.assertEqual(run(go()), [], "同一事件对象应被判重跳过")
 
 
 # ===========================================================================

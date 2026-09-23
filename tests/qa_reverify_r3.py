@@ -32,7 +32,6 @@ from astrbot_plugin_soutu_search.core.image_source import ImageSource  # noqa: E
 from astrbot_plugin_soutu_search.main import (  # noqa: E402
     SoutuSearchPlugin,
     _command_head,
-    _is_command_message,
     _recover_command_args,
 )
 
@@ -155,10 +154,10 @@ def ev(t):
 
 print("-- 应识别为指令 --")
 for t in ["/搜图", "/搜图cat", "/搜图http://x", "搜图帮助x", "/soutuhelp", "。搜图 x", "!找图"]:
-    print(f"   {_is_command_message(ev(t))!s:<5} <- {t!r}")
+    print(f"   {(_command_head(t) is not None)!s:<5} <- {t!r}")
 print("-- 应【不】识别（误报） --")
 for t in ["搜图真有意思", "soutubot很棒", "找图…", "搜图帮助…", "普通聊天", "/其它指令"]:
-    print(f"   {_is_command_message(ev(t))!s:<5} <- {t!r}")
+    print(f"   {(_command_head(t) is not None)!s:<5} <- {t!r}")
 
 print("-- 【回归】非 ASCII 参数还原（_recover_command_args） --")
 for t in ["/搜图 cat_ears", "/搜图 blue_archive", "/搜图 猫娘", "/搜图 猫娘 白丝",
@@ -169,48 +168,9 @@ for t in ["/搜图 cat_ears", "/搜图 blue_archive", "/搜图 猫娘", "/搜图
 
 
 # --------------------------------------------------------------------------- #
-hr("#5b message_id 缺失回退键（不同 event 实例应彼此独立）")
-p = SoutuSearchPlugin(object(), {"auto_search_cooldown": 0, "cache_ttl": 0})
-
-
-class NoIdEv:
-    unified_msg_origin = "grp-1"
-    message_str = ""
-
-    def __init__(self):
-        self.message_obj = type("M", (), {})()  # 每个实例独立对象
-
-    def get_message_str(self):
-        return ""
-
-    def plain_result(self, t):
-        return ("plain", t)
-
-    def chain_result(self, c):
-        return ("chain", c)
-
-
-async def fake_fe(event):
-    from astrbot_plugin_soutu_search.core.image_source import ImagePayload
-    return ImagePayload(data=PNG, mime="image/png", filename="q.png")
-
-
-async def fake_search(*a, **k):
-    from astrbot_plugin_soutu_search.core.formatter import SourceOutcome as SO
-    return SO(results=[SearchResult("T", "S", "https://u", None, 90.0, {})])
-
-
-p.image_source.from_event = fake_fe
-p.soutu.search = fake_search  # 防止真实联网 + 未关闭会话告警
-
-
-async def collect(agen):
-    return [x async for x in agen]
-
-
-p._mark_handled(NoIdEv())
-out = run(collect(p.on_message(NoIdEv())))
-print("登记(grp-1, obj:A) 后，另一『无 id』事件 B 被自动搜图跳过? ->", out == [])
-print("（期望 False：不同事件实例互不影响）")
+hr("#5b 自动搜图已彻底删除（无 on_message / 无判重登记）")
+_main_src = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
+print("  main.py 仍有 on_message 监听器:", "def on_message" in _main_src)
+print("  main.py 仍有 _RecentMessageRegistry:", "_RecentMessageRegistry" in _main_src)
 
 print("\n完成。")

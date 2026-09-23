@@ -29,7 +29,6 @@ from astrbot_plugin_soutu_search.core.image_source import ImageSource  # noqa: E
 from astrbot_plugin_soutu_search.main import (  # noqa: E402
     SoutuSearchPlugin,
     _command_head,
-    _is_command_message,
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
@@ -124,53 +123,15 @@ finally:
 
 # --------------------------------------------------------------------------- #
 hr("#5 指令判定：紧贴形式识别 + 误报检查")
-def ev(text):
-    class E:
-        def get_message_str(self):
-            return text
-    return E()
-
-
 for t in ["/搜图", "/搜图cat", "/搜图http://x", "搜图帮助x", "/soutuhelp", "。搜图 x", "!找图"]:
-    print(f"  识别为指令 {_is_command_message(ev(t))!s:<5} <- {t!r}")
+    print(f"  识别为指令 {(_command_head(t) is not None)!s:<5} <- {t!r}")
 for t in ["普通聊天", "帮我搜图", "/其它指令", "搜索图片", "搜图真有意思", "soutubot很棒"]:
-    print(f"  识别为指令 {_is_command_message(ev(t))!s:<5} <- {t!r}  (误报?)")
+    print(f"  识别为指令 {(_command_head(t) is not None)!s:<5} <- {t!r}  (误报?)")
 
 
 # --------------------------------------------------------------------------- #
-hr("#5b message_id 缺失时的判重副作用")
-p = SoutuSearchPlugin(object(), {"auto_search_cooldown": 0, "cache_ttl": 0})
+hr("#5b 自动搜图已彻底删除（无 on_message / 无判重登记）")
+_main_src = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
+print("  main.py 仍有 on_message 监听器:", "def on_message" in _main_src)
+print("  main.py 仍有 _RecentMessageRegistry:", "_RecentMessageRegistry" in _main_src)
 
-
-class NoIdEv:
-    unified_msg_origin = "grp-1"
-    message_str = ""
-    message_obj = type("M", (), {})()
-
-    def get_message_str(self):
-        return ""
-
-    def plain_result(self, t):
-        return ("plain", t)
-
-    def chain_result(self, c):
-        return ("chain", c)
-
-
-async def fake_fe(event):
-    from astrbot_plugin_soutu_search.core.image_source import ImagePayload
-    return ImagePayload(data=PNG, mime="image/png", filename="q.png")
-
-
-p.image_source.from_event = fake_fe
-
-
-async def _collect(agen):
-    return [x async for x in agen]
-
-
-p._mark_handled(NoIdEv())  # 无 id 的指令消息被登记为 ("grp-1","")
-out = run(_collect(p.on_message(NoIdEv())))
-
-print("登记(grp-1,'') 后，同会话另一条『无 id』图片消息被自动搜图跳过?:", out == [])
-print("（若为 True，说明 message_id 缺失时会把后续首条消息误判为已处理）")

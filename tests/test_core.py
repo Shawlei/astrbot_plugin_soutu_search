@@ -542,13 +542,11 @@ class TestImageSource(unittest.TestCase):
 class TestPluginConfig(unittest.TestCase):
     def test_defaults(self):
         plugin = SoutuSearchPlugin(MagicMock(), {})
-        self.assertTrue(plugin.enable_auto_search)
         self.assertFalse(plugin.nsfw_send_image)  # NSFW 默认关闭（硬性）
         self.assertEqual(plugin.result_count, 3)
         self.assertEqual(plugin.min_score, 28)
         self.assertEqual(plugin.search_factor, "1.2")
         self.assertEqual(plugin.safebooru_rating, "safe")
-        self.assertEqual(plugin.auto_search_cooldown, 30)
         self.assertEqual(plugin.cache_ttl, 3600)
 
     def test_overrides_and_fallbacks(self):
@@ -559,14 +557,12 @@ class TestPluginConfig(unittest.TestCase):
                 "result_count": 5,
                 "search_factor": "1.4",
                 "safebooru_rating": "all",
-                "enable_auto_search": False,
             },
         )
         self.assertTrue(plugin.nsfw_send_image)
         self.assertEqual(plugin.result_count, 5)
         self.assertEqual(plugin.search_factor, "1.4")
         self.assertEqual(plugin.safebooru_rating, "all")
-        self.assertFalse(plugin.enable_auto_search)
 
         # 非法值回退
         plugin2 = SoutuSearchPlugin(MagicMock(), {"search_factor": "9.9", "safebooru_rating": "xxx"})
