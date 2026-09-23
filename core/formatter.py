@@ -53,12 +53,39 @@ def _result_line(index: int, result: SearchResult) -> str:
     if rating:
         line += f" | 评级 {rating}"
 
+    # SauceNAO 反查的画师（Pixiv 等）：creator / author_name，或退化为 member(uid)
+    artist = extra.get("artist")
+    if artist:
+        line += f" | 画师 {artist}"
+
     if extra.get("low_confidence"):
         line += " ⚠️低置信度"
 
     if result.url:
         line += f"\n   🔗 {result.url}"
     return line
+
+
+def _warning_text(warning) -> str:
+    """把一条 warning 渲染为带 ``⚠️`` 前缀的单行文本。
+
+    若 warning **已自带** ``⚠️`` 前缀（部分 provider 会预先加好），则**不再重复添加**，
+    避免出现「⚠️ ⚠️」双 emoji。空白 warning 返回空串（调用方应跳过）。
+    """
+    text = str(warning).strip()
+    if not text:
+        return ""
+    if text.startswith("⚠️"):
+        return text
+    return f"⚠️ {text}"
+
+
+def _append_warnings(blocks: list[dict], warnings) -> None:
+    """把若干 warning 以去重前缀的文本块追加到 ``blocks``（跳过空项）。"""
+    for warning in warnings or []:
+        text = _warning_text(warning)
+        if text:
+            blocks.append({"type": "text", "text": text})
 
 
 def _text_blocks_length(blocks: list[dict]) -> int:
@@ -158,8 +185,7 @@ def format_outcome(
 
     if not results:
         blocks.append({"type": "text", "text": "😥 没有找到匹配结果。"})
-        for warning in outcome.warnings or []:
-            blocks.append({"type": "text", "text": f"⚠️ {warning}"})
+        _append_warnings(blocks, outcome.warnings)
     else:
         lines = [_result_line(i, r) for i, r in enumerate(results, start=1)]
         blocks.append({"type": "text", "text": "\n".join(lines)})
@@ -171,7 +197,9 @@ def format_outcome(
             )
 
         for warning in outcome.warnings or []:
-            blocks.append({"type": "text", "text": f"⚠️ {warning}"})
+            text = _warning_text(warning)
+            if text:
+                blocks.append({"type": "text", "text": text})
 
         # 仅在显式开启时才追加缩略图，且只追加缩略图 URL（绝不改动文本）
         if nsfw_send_image:

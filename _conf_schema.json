@@ -99,6 +99,47 @@
     "type": "string",
     "default": "https://safebooru.org"
   },
+  "saucenao_api_key": {
+    "description": "SauceNAO API Key（搜 P 站）",
+    "hint": "用于「搜P站」反查图片出处（对接 saucenao.com）。申请地址：https://saucenao.com/user.php?page=search-api 。未填写时「搜P站」会给出引导、不发起请求",
+    "type": "string",
+    "default": "",
+    "secret": true
+  },
+  "saucenao_base_url": {
+    "description": "SauceNAO 接口地址",
+    "hint": "一般无需修改。中国大陆通常需要代理才能访问；若你自建了镜像/反代，可改填此处（AstrBot 有全局 http_proxy 配置可用）",
+    "type": "string",
+    "default": "https://saucenao.com"
+  },
+  "saucenao_db_mask": {
+    "description": "SauceNAO 数据库位掩码",
+    "hint": "96 = 仅 Pixiv（0x20|0x40 = pixiv + pixivhistorical，默认）；0 = 不限库（搜全部）。可自行相加常用库：pixiv=32、pixivhistorical=64、danbooru=512、yande.re=4096、Twitter=0x10000000000。非法/负数将回退为 96",
+    "type": "int",
+    "default": 96
+  },
+  "saucenao_min_similarity": {
+    "description": "SauceNAO 最低相似度（%）",
+    "hint": "0-100，低于此相似度的命中不展示。SauceNAO 的相似度体系与 soutubot 的 min_score 不同，故独立配置；越界将回退为 50",
+    "type": "int",
+    "default": 50,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 1
+    }
+  },
+  "saucenao_hide": {
+    "description": "SauceNAO 内容过滤",
+    "hint": "0=全显示（默认）、1=隐藏预期 R18、2=隐藏预期可疑、3=只留安全。非法值将回退为 0",
+    "type": "int",
+    "default": 0,
+    "slider": {
+      "min": 0,
+      "max": 3,
+      "step": 1
+    }
+  },
   "access_mode": {
     "description": "访问控制模式",
     "hint": "all = 不限制（默认，向后兼容，下方白/黑名单一律被忽略）；whitelist = 仅白名单内的会话可用；blacklist = 黑名单内的会话禁用。注意：whitelist 列表为空时会 fail-closed（所有会话都不可用），请务必先填写白名单再启用该模式",

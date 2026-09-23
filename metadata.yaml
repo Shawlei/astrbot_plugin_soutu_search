@@ -1,13 +1,14 @@
 name: astrbot_plugin_soutu_search
-display_name: 搜图 (以图搜图 / 关键词搜图)
+display_name: 搜图 (以图搜图 / 关键词搜图 / 搜P站)
 desc: >
   为 AstrBot 提供搜图能力：发送图片并用 搜图 指令即可「以图搜图」（对接 soutubot.moe），
-  或用 `搜图 <关键词>` 做关键词搜图（对接 Safebooru）。
+  或用 `搜图 <关键词>` 做关键词搜图（对接 Safebooru），或用 `搜P站` 反查图片出处/画师
+  （对接 SauceNAO，默认仅检索 Pixiv 库）。
   支持结果 TTL 缓存，命令前缀跟随 AstrBot 全局配置（wake_prefix）。
   仅通过指令触发（不监听消息、不自动搜图），并默认采用「只回文字与来源链接」的安全策略
   （缩略图默认关闭，避免风控）。
-version: 0.2.0
+version: 0.3.0
 author: Shawlei
 astrbot_version: ">=4.26.0,<5"
 repo: https://github.com/Shawlei/astrbot_plugin_soutu_search
-short_desc: 发送图片并用「搜图」指令以图搜图，或用关键词搜图（对接 soutubot.moe 与 Safebooru）
+short_desc: 以图搜图（soutubot）+ 关键词搜图（Safebooru）+ 搜P站（SauceNAO 反查 Pixiv）

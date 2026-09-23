@@ -297,7 +297,7 @@ for label, e in (
         print(f"  FAIL 事件{label} 崩溃: {exc!r}")
 
 # ===========================================================================
-hr("C. 配置一致性程序化比对（15 ↔ 15）")
+hr("C. 配置一致性程序化比对（20 ↔ 20）")
 schema = json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
 schema_keys = set(schema.keys())
 src = (PLUGIN_ROOT / "main.py").read_text(encoding="utf-8")
@@ -306,7 +306,7 @@ used |= set(re.findall(r'\bself\.config\.get\(\s*"([^"]+)"', src))
 print(f"  schema 键数={len(schema_keys)}  代码使用键数={len(used)}")
 print(f"  用了没定义: {sorted(used - schema_keys)}")
 print(f"  定义了没用: {sorted(schema_keys - used)}")
-check("schema 键数", len(schema_keys), 15)
+check("schema 键数", len(schema_keys), 20)
 check("无『用了没定义』", used - schema_keys, set())
 check("无『定义了没用』", schema_keys - used, set())
 access3 = {"access_mode", "whitelist", "blacklist"}

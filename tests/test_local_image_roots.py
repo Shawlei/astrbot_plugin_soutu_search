@@ -7,7 +7,7 @@
 - **AstrBot 临时目录图片被接受**：模拟 ``<data>/plugin_data/<plugin>`` + ``<data>/temp/...`` 结构；
 - **越权路径仍被拒**（证明没有放宽过头）；
 - ``extra_allowed_roots`` 逃生口：合法项可用、非法类型被忽略且不崩；
-- 配置一致性 **15 ↔ 15**（自动搜图相关配置项已彻底移除）。
+- 配置一致性 **20 ↔ 20**（自动搜图相关配置项已彻底移除）。
 
 复用 tests/test_core.py 的 astrbot 桩（import 即完成 sys.modules 装配）。
 运行::
@@ -282,7 +282,7 @@ class TestAstrbotDataRootResolution(unittest.TestCase):
 
 
 # ===========================================================================
-# 5. 配置一致性（15 ↔ 15）
+# 5. 配置一致性（20 ↔ 20）
 # ===========================================================================
 class TestConfigConsistency(unittest.TestCase):
     def _used_keys(self) -> set[str]:
@@ -295,7 +295,7 @@ class TestConfigConsistency(unittest.TestCase):
         schema = json.loads(CONF_SCHEMA.read_text(encoding="utf-8"))
         schema_keys = set(schema.keys())
         used = self._used_keys()
-        self.assertEqual(len(schema_keys), 15, f"schema 键数应为 15，实际 {len(schema_keys)}")
+        self.assertEqual(len(schema_keys), 20, f"schema 键数应为 20，实际 {len(schema_keys)}")
         self.assertEqual(schema_keys - used, set(), f"定义了但未使用: {schema_keys - used}")
         self.assertEqual(used - schema_keys, set(), f"使用了但未定义: {used - schema_keys}")
 

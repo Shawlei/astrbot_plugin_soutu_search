@@ -69,9 +69,23 @@ _SCHEME_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*)://")
 
 
 def _is_blocked_ip(ip) -> bool:
-    """判断一个 ``ipaddress`` 对象是否属于内网 / 环回 / 链路本地 / 保留 / 组播 / 未指定地址。"""
+    """判断一个 ``ipaddress`` 对象是否应被拒绝（**非公网可路由地址一律拒绝**）。
+
+    拒绝范围（取并集，任一命中即拒绝）：
+    - 内网 ``is_private``（RFC 1918 等）；
+    - 环回 ``is_loopback`` / 链路本地 ``is_link_local`` / 保留 ``is_reserved``；
+    - 组播 ``is_multicast`` / 未指定 ``is_unspecified``；
+    - **一切非全局单播地址 ``not is_global``** —— 用于兜住那些"既不算内网、也不算保留、
+      却也不可全局路由"的边角网段，此前它们会让上面所有判定同时为 ``False`` 而被放行。
+      典型即 **CGNAT / 共享地址 ``100.64.0.0/10``（RFC 6598）**，还包括 AS112
+      （``192.31.196.0/24``、``192.175.48.0/24``）、AMT（``192.52.193.0/24``）、
+      已弃用的 6to4 中继（``192.88.99.0/24``）、PCP/TURN anycast（``192.0.0.9/32``、
+      ``192.0.0.10/32``）等。这些段虽非"内网"，但同样**不可能由外网图床合法命中**；
+      而本插件新增的"图片直链"入口使其可由**用户输入**触达，故一并拒绝（纵深防御）。
+    """
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         # IPv4-mapped IPv6（如 ::ffff:127.0.0.1）按其映射的 IPv4 判定
+        # （故 ::ffff:100.64.0.1 这类 CGNAT 映射形态同样会被拒绝）
         return _is_blocked_ip(ip.ipv4_mapped)
     return bool(
         ip.is_private
@@ -80,6 +94,7 @@ def _is_blocked_ip(ip) -> bool:
         or ip.is_reserved
         or ip.is_multicast
         or ip.is_unspecified
+        or not ip.is_global
     )
 
 

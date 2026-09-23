@@ -26,6 +26,11 @@ def make_image_key(data: bytes) -> str:
     return "img:" + sha256_hex(data)
 
 
+def make_saucenao_key(data: bytes) -> str:
+    """SauceNAO 反查的缓存键（**独立命名空间**，避免与 soutubot 的图片缓存互相污染）。"""
+    return "snao:" + sha256_hex(data)
+
+
 def make_tags_key(tags: str, *, rating: str = "safe", limit: int = 3, page: int = 0) -> str:
     """以关键词 + 过滤参数构造缓存键。"""
     normalized = " ".join(str(tags).split()).strip().lower()

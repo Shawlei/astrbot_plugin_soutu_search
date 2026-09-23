@@ -1,11 +1,13 @@
 """AstrBot 搜图插件（astrbot_plugin_soutu_search）
 
-两种能力：
+三种能力：
 1. **以图搜图** → 上传图片调用 soutubot.moe 做相似检索。
 2. **关键词搜图** → 调用 Safebooru DAPI 按标签检索。
+3. **搜 P 站（SauceNAO 反查）** → 上传图片调用 SauceNAO，可限定 Pixiv 库反查出处/画师。
 
 触发方式（**仅指令触发**）：
 - ``<前缀>搜图``（附图 = 以图搜图；带文本 = 关键词搜图），``<前缀>搜图帮助`` 查看用法。
+- ``<前缀>搜P站``（别名 ``pixiv`` / ``saucenao``）：SauceNAO 反查（需配置 API Key）。
 - 前缀跟随 AstrBot 全局配置的命令前缀（顶层 ``wake_prefix``，默认 ``/``）。
 - **不监听消息、不会自动搜图**：只有显式发送指令才会触发，杜绝被动打扰。
 
@@ -24,16 +26,35 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
-from .core.cache import TTLCache, make_image_key, make_tags_key
+from .core.cache import TTLCache, make_image_key, make_saucenao_key, make_tags_key
 from .core.formatter import SourceOutcome, blocks_to_components, format_outcome
-from .core.image_source import ImagePayload, ImageSource
+from .core.image_source import ImagePayload, ImageSource, is_http_url
 from .core.safebooru_client import SafebooruClient
+from .core.saucenao_client import (
+    SaucenaoClient,
+    resolve_db_mask,
+    resolve_hide,
+    resolve_min_similarity,
+)
 from .core.soutu_client import SoutuClient
 
 PLUGIN_NAME = "astrbot_plugin_soutu_search"
 
 # 指令名，**长的 / 更具体的在前**（保证 `搜图帮助x` 先匹配到 `搜图帮助`，rest 才是 `x`）。
-_COMMAND_NAMES = ("搜图帮助", "搜图help", "soutuhelp", "搜图", "找图", "soutu")
+_COMMAND_NAMES = (
+    "搜图帮助",
+    "搜图help",
+    "soutuhelp",
+    "搜P站帮助",
+    "搜P站help",
+    "saucenaohelp",
+    "搜P站",
+    "saucenao",
+    "pixiv",
+    "搜图",
+    "找图",
+    "soutu",
+)
 
 # 默认命令前缀（AstrBot 全局配置顶层 wake_prefix 的兜底值）
 DEFAULT_WAKE_PREFIX = "/"
@@ -53,6 +74,25 @@ _ID_SPLIT_RE = re.compile(r"[,\s]+")
 
 # 指令受限时的友好提示
 ACCESS_DENIED_TEXT = "🚫 本会话未启用搜图功能，如需使用请联系管理员。"
+
+# SauceNAO 未配置 API Key 时的引导（**发请求前**就提示，避免无谓配额消耗）
+SAUCENAO_KEY_MISSING_TEXT = (
+    "⚠️ 尚未配置 SauceNAO API Key，无法使用「搜P站」。\n"
+    "请在插件配置中填写 `saucenao_api_key`，申请地址："
+    "https://saucenao.com/user.php?page=search-api"
+)
+
+# SauceNAO 未附图时的用法提示
+SAUCENAO_NO_IMAGE_TEXT = (
+    "🖼 请发送一张图片并附带指令，或引用一张图片后再发送指令。\n"
+    "示例：发送图片 + `{p}搜P站`，或直接 `{p}搜P站 <图片链接>`。"
+)
+
+# 图片直链获取失败时的提示（文案宣称支持 `<指令> <图片链接>`，故必须真正处理失败分支）
+IMAGE_URL_FETCH_FAIL_TEXT = (
+    "😥 无法获取图片链接：{err}\n"
+    "请确认它是可直接访问的图片直链（支持 http/https，且非内网地址），或改用「引用图片」的方式。"
+)
 
 
 def _normalize_prefixes(raw) -> list[str]:
@@ -135,7 +175,9 @@ _HELP_TEMPLATE = """📖 搜图插件用法
    · 支持引用一张图片后发送 `{p}搜图`
    · 支持直接用 `{p}搜图 <图片链接>`
 ② 关键词搜图：`{p}搜图 <关键词>`，例如 `{p}搜图 cat_ears`
-③ 查看帮助：`{p}搜图帮助`
+③ 搜 P 站（SauceNAO 反查，别名 `pixiv` / `saucenao`）：发送图片并附带 `{p}搜P站`
+   · 支持引用图片 / 图片链接 · 需先在插件配置中填写 `saucenao_api_key`
+④ 查看帮助：`{p}搜图帮助`（SauceNAO 用法：`{p}搜P站帮助`）
 
 说明：搜图**只能通过指令触发**，群内有人发图不会自动搜图。
 默认只回复文字与来源链接，不发送缩略图。可在插件配置中开启 `nsfw_send_image` 以附带缩略图。"""
@@ -149,6 +191,29 @@ def _render_help(prefix: str) -> str:
 
 # 默认（前缀为 ``/``）的帮助文案常量，便于外部引用/测试
 HELP_TEXT = _render_help(DEFAULT_WAKE_PREFIX)
+
+
+_SAUCENAO_HELP_TEMPLATE = """📖 搜 P 站（SauceNAO 反查）用法
+
+① 发送图片并附带 `{p}搜P站`（也支持引用一张图片后发送，或 `{p}搜P站 <图片链接>`）
+② 别名：`pixiv`、`saucenao`（如 `{p}pixiv`、`{p}saucenao`）
+③ 查看帮助：`{p}搜P站帮助`
+
+说明：
+· 需先在插件配置中填写 `saucenao_api_key`（申请：https://saucenao.com/user.php?page=search-api）
+· 默认只检索 **Pixiv 系列**数据库，可用配置 `saucenao_db_mask` 调整（96=仅 Pixiv）
+· 免费账户配额：**150 次/天、4 次/30 秒**
+· 中国大陆访问 SauceNAO 通常需要代理（AstrBot 有全局 `http_proxy` 配置可用）"""
+
+
+def _render_saucenao_help(prefix: str) -> str:
+    """按实际命令前缀渲染「搜 P 站」帮助文案；前缀为空时回退 ``/``。"""
+    p = prefix if isinstance(prefix, str) and prefix else DEFAULT_WAKE_PREFIX
+    return _SAUCENAO_HELP_TEMPLATE.format(p=p)
+
+
+# 默认（前缀为 ``/``）的「搜 P 站」帮助文案常量
+SAUCENAO_HELP_TEXT = _render_saucenao_help(DEFAULT_WAKE_PREFIX)
 
 
 def _to_bool(value, default: bool) -> bool:
@@ -290,6 +355,14 @@ class SoutuSearchPlugin(Star):
         self.soutu_base_url = _to_str(cfg.get("soutu_base_url"), "https://soutubot.moe")
         self.safebooru_base_url = _to_str(cfg.get("safebooru_base_url"), "https://safebooru.org")
 
+        # ---- SauceNAO（搜 P 站）配置（全部带默认值，非法值回退安全默认）----
+        # API Key 允许为空串（未配置时由指令入口给出引导，不发起请求）
+        self.saucenao_api_key = _to_str(cfg.get("saucenao_api_key"), "")
+        self.saucenao_base_url = _to_str(cfg.get("saucenao_base_url"), "https://saucenao.com")
+        self.saucenao_db_mask = resolve_db_mask(cfg.get("saucenao_db_mask"))
+        self.saucenao_min_similarity = resolve_min_similarity(cfg.get("saucenao_min_similarity"))
+        self.saucenao_hide = resolve_hide(cfg.get("saucenao_hide"))
+
         # 回复正文长度上限（字符），超出按字符边界截断
         self.max_reply_chars = max(0, _to_int(cfg.get("max_reply_chars"), 1200))
         # 单张图片大小上限（字节），默认 10MB
@@ -322,6 +395,15 @@ class SoutuSearchPlugin(Star):
             timeout=self.request_timeout,
             rating=self.safebooru_rating,
         )
+        self.saucenao = SaucenaoClient(
+            base_url=self.saucenao_base_url,
+            api_key=self.saucenao_api_key,
+            db_mask=self.saucenao_db_mask,
+            numres=max(6, min(40, self.result_count * 5)),
+            min_similarity=self.saucenao_min_similarity,
+            hide=self.saucenao_hide,
+            timeout=self.request_timeout,
+        )
         self.cache = TTLCache(default_ttl=self.cache_ttl)
 
         logger.info(
@@ -337,6 +419,14 @@ class SoutuSearchPlugin(Star):
         logger.info(
             "[搜图] 本地图片允许根目录: %s",
             "; ".join(str(root) for root in self.allowed_roots) or "（空：拒绝一切本地文件）",
+        )
+        logger.info(
+            "[搜图] SauceNAO(搜P站): base=%s, dbmask=%s, minsim=%s, hide=%s, key=%s",
+            self.saucenao_base_url,
+            self.saucenao_db_mask,
+            self.saucenao_min_similarity,
+            self.saucenao_hide,
+            "已配置" if self.saucenao_api_key else "未配置",
         )
 
     # ------------------------------------------------------------------ #
@@ -372,6 +462,10 @@ class SoutuSearchPlugin(Star):
     def _help_text(self) -> str:
         """按当前实际前缀渲染帮助文案。"""
         return _render_help(self._help_prefix())
+
+    def _saucenao_help_text(self) -> str:
+        """按当前实际前缀渲染「搜 P 站」帮助文案。"""
+        return _render_saucenao_help(self._help_prefix())
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -519,6 +613,7 @@ class SoutuSearchPlugin(Star):
             ("image_source", self.image_source),
             ("soutu", self.soutu),
             ("booru", self.booru),
+            ("saucenao", self.saucenao),
         ):
             try:
                 await obj.close()
@@ -556,11 +651,44 @@ class SoutuSearchPlugin(Star):
             return
         yield event.plain_result(self._help_text())
 
+    @filter.command("搜P站", alias={"pixiv", "saucenao"})
+    async def pixiv_cmd(self, event: AstrMessageEvent, args: str = ""):
+        """搜 P 站指令入口：用 SauceNAO 反查图片出处（默认仅 Pixiv 库）。
+
+        与 ``搜图`` **分开**独立指令：SauceNAO 免费配额仅 4 次/30 秒，若挂在 ``搜图``
+        上并跑会瞬间耗尽，故按需单独触发。
+        """
+        if not self._is_access_allowed(event):
+            yield event.plain_result(ACCESS_DENIED_TEXT)
+            return
+        if not self.saucenao_api_key:
+            # 未配置 API Key：发请求前就给出引导，避免无谓的网络/配额消耗
+            yield event.plain_result(SAUCENAO_KEY_MISSING_TEXT)
+            return
+        text = args.strip() if isinstance(args, str) else ""
+        recovered = _recover_command_args(event, self._wake_prefixes())
+        if recovered is not None and len(recovered) > len(text):
+            text = recovered
+        async for result in self._dispatch_saucenao(event, text):
+            yield result
+
+    @filter.command("搜P站帮助", alias={"搜P站help", "saucenaohelp"})
+    async def pixiv_help_cmd(self, event: AstrMessageEvent):
+        """搜 P 站帮助指令：输出用法说明。"""
+        if not self._is_access_allowed(event):
+            yield event.plain_result(ACCESS_DENIED_TEXT)
+            return
+        yield event.plain_result(self._saucenao_help_text())
+
     # ------------------------------------------------------------------ #
     # 核心调度
     # ------------------------------------------------------------------ #
     async def _dispatch_search(self, event: AstrMessageEvent, text: str):
-        """判别搜索类型并执行。"""
+        """判别搜索类型并执行。
+
+        优先级：消息里的图片 → 文本若是 http(s) 图片直链则下载该图 → 否则按关键词搜图。
+        （帮助文案宣称支持 `<指令> <图片链接>`，故这里真正落实该路径；下载失败给出明确提示。）
+        """
         try:
             payload = await self.image_source.from_event(event)
         except Exception as exc:  # noqa: BLE001
@@ -571,6 +699,18 @@ class SoutuSearchPlugin(Star):
             async for result in self._search_by_image(event, payload, cached_note=True):
                 yield result
             return
+
+        if text and is_http_url(text):
+            try:
+                payload = await self.image_source.from_source(text)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[搜图] 图片链接获取失败: %s", exc)
+                yield event.plain_result(IMAGE_URL_FETCH_FAIL_TEXT.format(err=exc))
+                return
+            if payload is not None:
+                async for result in self._search_by_image(event, payload, cached_note=True):
+                    yield result
+                return
 
         if text:
             async for result in self._search_by_keyword(event, text):
@@ -657,6 +797,77 @@ class SoutuSearchPlugin(Star):
         header = (
             f"🔍 关键词「{keyword}」搜图完成{note}，命中 {len(outcome.results)} 条"
             f"，耗时 {elapsed:.2f}s"
+        )
+        blocks = format_outcome(
+            outcome,
+            nsfw_send_image=self.nsfw_send_image,
+            max_results=self.result_count,
+            header=header,
+            max_chars=self.max_reply_chars,
+        )
+        yield self._emit(event, blocks)
+
+    # ------------------------------------------------------------------ #
+    # SauceNAO（搜 P 站）调度
+    # ------------------------------------------------------------------ #
+    async def _dispatch_saucenao(self, event: AstrMessageEvent, text: str = ""):
+        """SauceNAO 反查调度：帮助子指令 → 取图（消息图片 / http 图片直链）→ 反查。"""
+        if text in ("帮助", "help", "-h", "--help", "用法"):
+            yield event.plain_result(self._saucenao_help_text())
+            return
+
+        try:
+            payload = await self.image_source.from_event(event)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[搜图] 取图失败（SauceNAO）: %s", exc)
+            payload = None
+
+        # 帮助文案宣称支持 `<指令> <图片链接>`，这里真正落实该路径（含 SSRF 防护）
+        if payload is None and is_http_url(text):
+            try:
+                payload = await self.image_source.from_source(text)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[搜图] 图片链接获取失败（SauceNAO）: %s", exc)
+                yield event.plain_result(IMAGE_URL_FETCH_FAIL_TEXT.format(err=exc))
+                return
+
+        if payload is None:
+            yield event.plain_result(SAUCENAO_NO_IMAGE_TEXT.format(p=self._help_prefix()))
+            return
+
+        async for result in self._search_by_saucenao_image(event, payload):
+            yield result
+
+    async def _search_by_saucenao_image(self, event: AstrMessageEvent, payload: ImagePayload):
+        """SauceNAO 反查并回复（独立缓存命名空间，避免与 soutu 结果互相污染）。"""
+        cache_key = make_saucenao_key(payload.data)
+        started = time.perf_counter()
+        outcome: SourceOutcome | None = self.cache.get(cache_key)
+        note = ""
+
+        if outcome is not None:
+            note = "（缓存）"
+        else:
+            try:
+                outcome = await self.saucenao.search(
+                    payload.data,
+                    filename=payload.filename,
+                    mime=payload.mime,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[搜图] SauceNAO 反查失败: %s", exc, exc_info=True)
+                yield event.plain_result(
+                    f"😥 搜P站失败：{exc}\n"
+                    "请稍后重试；中国大陆访问 SauceNAO 通常需要代理（可在 AstrBot 全局配置 http_proxy）。"
+                )
+                return
+            self.cache.set(cache_key, outcome)
+
+        elapsed = time.perf_counter() - started
+
+        header = (
+            f"🔍 搜P站（SauceNAO）完成{note}，命中 {len(outcome.results)} 条"
+            f"（相似度≥{self.saucenao_min_similarity}），耗时 {elapsed:.2f}s"
         )
         blocks = format_outcome(
             outcome,
