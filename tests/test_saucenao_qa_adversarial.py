@@ -460,12 +460,13 @@ class TestMaskAndConfig(unittest.TestCase):
         for ok in (0, 1, 2, 3):
             self.assertEqual(resolve_hide(ok), ok)
 
-    def test_plugin_config_24_keys(self):  # [工程师已改 #6] 新增 4 项，20 -> 24
+    def test_plugin_config_26_keys(self):  # [v0.6.1] 新增 yandex_enable / yandex_base_url，24 -> 26
         schema = json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-        self.assertEqual(len(schema), 24)
+        self.assertEqual(len(schema), 26)
         for k in ("saucenao_api_key", "saucenao_base_url", "saucenao_db_mask",
                   "saucenao_min_similarity", "saucenao_hide",
-                  "saucenao_enable", "ascii2d_enable", "ascii2d_base_url", "ascii2d_bovw"):
+                  "saucenao_enable", "yandex_enable", "yandex_base_url",
+                  "ascii2d_enable", "ascii2d_base_url", "ascii2d_bovw"):
             self.assertIn(k, schema)
 
     def test_plugin_defaults_and_override(self):
@@ -537,7 +538,8 @@ class _FakeEvent:
 class TestApiKeyMissingNoRequest(unittest.TestCase):
     def test_skip_saucenao_but_ascii2d_runs_when_key_missing(self):
         """未配置 api_key：不发 SauceNAO 请求，但 ascii2d 仍运行。 [工程师已改 #7]"""
-        p = SoutuSearchPlugin(object(), {})  # 无 key
+        p = SoutuSearchPlugin(object(), {"ascii2d_enable": True})  # 无 key
+        p.yandex = _StubAscii2dRecord()  # type: ignore[assignment]  Yandex 默认启用，必须打桩
         spy = RecordingSession()
         p.saucenao._session = spy
         a2d = _StubAscii2dRecord()

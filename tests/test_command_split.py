@@ -150,6 +150,22 @@ class _StubAscii2d:
         pass
 
 
+class _StubYandex:
+    """Yandex provider 替身（默认启用，避免测试触发真实联网）。"""
+
+    def __init__(self):
+        self.calls = []
+
+    async def search(self, image, **kw):
+        self.calls.append(kw)
+        return SourceOutcome(
+            results=[SearchResult(title="yadx", source="danbooru", url="https://d/1", score=None)]
+        )
+
+    async def close(self):
+        pass
+
+
 def _chain_text(result) -> str:
     """从 ``("plain", text)`` / ``("chain", comps)`` 结果中提取纯文本。"""
     kind, payload = result
@@ -159,7 +175,9 @@ def _chain_text(result) -> str:
 
 
 def make_plugin(**cfg):
-    return SoutuSearchPlugin(object(), cfg)
+    p = SoutuSearchPlugin(object(), cfg)
+    p.yandex = _StubYandex()  # type: ignore[assignment]  默认启用，必须打桩
+    return p
 
 
 # ===========================================================================
@@ -356,7 +374,7 @@ class TestSearchCommand(unittest.TestCase):
 
     def test_search_with_message_image_goes_saucenao(self):
         """「搜图」+ 图片 → **双源并行**：SauceNAO 与 ascii2d 各 1 次，soutu 0 次。 [工程师已改 #9]"""
-        p, stub_sa = self._plugin_with_saucenao(saucenao_api_key="k")
+        p, stub_sa = self._plugin_with_saucenao(saucenao_api_key="k", ascii2d_enable=True)
         stub_a2d = _StubAscii2d()
         stub_soutu = _StubSoutu()
         stub_booru = _StubBooru()
@@ -377,7 +395,7 @@ class TestSearchCommand(unittest.TestCase):
 
     def test_search_with_image_url_downloads_then_saucenao(self):
         """「搜图」+ 图片直链 → 下载后**双源并行**（SauceNAO + ascii2d）。 [工程师已改 #10]"""
-        p, stub_sa = self._plugin_with_saucenao(saucenao_api_key="k")
+        p, stub_sa = self._plugin_with_saucenao(saucenao_api_key="k", ascii2d_enable=True)
         stub_a2d = _StubAscii2d()
         stub_booru = _StubBooru()
         p.ascii2d = stub_a2d  # type: ignore[assignment]
@@ -424,7 +442,7 @@ class TestSearchCommand(unittest.TestCase):
 
     def test_search_image_without_api_key_hints_and_runs_ascii2d(self):
         """未配置 api_key：不再只回引导 —— 跳过 SauceNAO，但仍运行 ascii2d。 [工程师已改 #11]"""
-        p = make_plugin()  # 无 key
+        p = make_plugin(ascii2d_enable=True)  # 无 key
         stub_sa = _StubSaucenao()
         stub_a2d = _StubAscii2d()
         p.saucenao = stub_sa  # type: ignore[assignment]
@@ -444,7 +462,7 @@ class TestSearchCommand(unittest.TestCase):
 
     def test_search_image_url_without_api_key_hints_and_runs_ascii2d(self):
         """未配置 api_key：图片链接仍会下载（供 ascii2d），跳过 SauceNAO。 [工程师已改 #12]"""
-        p = make_plugin()  # 无 key
+        p = make_plugin(ascii2d_enable=True)  # 无 key
         stub_sa = _StubSaucenao()
         stub_a2d = _StubAscii2d()
         p.saucenao = stub_sa  # type: ignore[assignment]

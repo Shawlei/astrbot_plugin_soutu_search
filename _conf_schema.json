@@ -146,11 +146,23 @@
       "step": 1
     }
   },
-  "ascii2d_enable": {
-    "description": "启用 ascii2d（图片反查）",
-    "hint": "「搜图」图片分支是否启用 ascii2d。默认开启。ascii2d 覆盖 Pixiv/Twitter 等画师首发站，对近期图更有效，且**不需要任何 API Key**；需能访问 ascii2d.net（日本站点，大陆可能需要代理）",
+  "yandex_enable": {
+    "description": "启用 Yandex（以图搜图反查）",
+    "hint": "「搜图」图片分支是否启用 Yandex 识图（推荐默认开启）。全网索引能力极强，收录画师新作与各平台转载极快，完全免 API Key",
     "type": "bool",
     "default": true
+  },
+  "yandex_base_url": {
+    "description": "Yandex 接口地址",
+    "hint": "一般无需修改。默认 https://yandex.ru（比 yandex.com 更稳定、少被限制）",
+    "type": "string",
+    "default": "https://yandex.ru"
+  },
+  "ascii2d_enable": {
+    "description": "启用 ascii2d（图片反查）",
+    "hint": "「搜图」图片分支是否启用 ascii2d。默认关闭（因 ascii2d 近期启用严苛的 Cloudflare WAF 拦截，常规网络与代理容易出现 403 阻断或超时；若你有稳定住宅/日本代理可按需开启）",
+    "type": "bool",
+    "default": false
   },
   "ascii2d_base_url": {
     "description": "ascii2d 接口地址",

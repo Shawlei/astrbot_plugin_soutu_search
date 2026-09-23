@@ -102,6 +102,20 @@ class _StubSaucenaoRecord:
         pass
 
 
+class _StubYandexRecord:
+    """Yandex provider 替身（默认启用，避免测试触发真实联网）。"""
+
+    def __init__(self):
+        self.calls = []
+
+    async def search(self, image, **kw):
+        self.calls.append(kw)
+        return SourceOutcome(results=[SearchResult(title="yadx", source="danbooru", url="u", score=None)])
+
+    async def close(self):
+        pass
+
+
 def _chain_text(result):
     """从 ``("plain", text)`` / ``("chain", comps)`` 结果中提取纯文本（便于子串断言）。"""
     kind, payload = result
@@ -667,15 +681,17 @@ class TestCommandRouting(unittest.TestCase):
 
 class TestSaucenaoPluginCommands(unittest.TestCase):
     def _plugin(self, cfg=None):
-        return SoutuSearchPlugin(object(), cfg or {})
+        p = SoutuSearchPlugin(object(), cfg or {})
+        p.yandex = _StubYandexRecord()  # type: ignore[assignment]  默认启用，必须打桩
+        return p
 
     def test_api_key_missing_skips_saucenao_but_runs_ascii2d(self):
         """未配置 api_key：**不再只回引导** —— 跳过 SauceNAO，但仍运行 ascii2d。 [工程师已改 #4]
 
-        0.6.0 起图片分支为**双源并行**；ascii2d 无需任何 Key，故即使没配 SauceNAO key
+        0.6.0 起图片分支为**多源并行**；ascii2d 无需任何 Key，故即使没配 SauceNAO key
         也应继续反查。SauceNAO 段位置改为输出「已跳过」引导。
         """
-        p = self._plugin({})  # 无 key
+        p = self._plugin({"ascii2d_enable": True})  # 无 key
         stub_sa = _StubSaucenaoRecord()
         p.saucenao = stub_sa  # type: ignore[assignment]
         stub_a2d = _StubAscii2d()
@@ -806,8 +822,8 @@ class TestConfigConsistency(unittest.TestCase):
     def _schema(self):
         return json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
 
-    def test_schema_has_24_keys(self):  # [工程师已改 #1] 新增 4 项（saucenao_enable / ascii2d_*），20 -> 24
-        self.assertEqual(len(self._schema()), 24)
+    def test_schema_has_26_keys(self):  # [v0.6.1] 新增 yandex_enable / yandex_base_url，24 -> 26
+        self.assertEqual(len(self._schema()), 26)
 
     def test_new_keys_present_with_defaults(self):
         schema = self._schema()

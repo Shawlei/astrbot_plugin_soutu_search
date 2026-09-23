@@ -31,6 +31,11 @@ def make_saucenao_key(data: bytes) -> str:
     return "snao:" + sha256_hex(data)
 
 
+def make_yandex_key(data: bytes) -> str:
+    """Yandex 反查的缓存键（**独立命名空间**，避免与其他图源互相污染）。"""
+    return "yadx:" + sha256_hex(data)
+
+
 def make_ascii2d_key(data: bytes, *, bovw: bool = False) -> str:
     """ascii2d 反查的缓存键（**独立命名空间**，避免与 soutubot / SauceNAO 互相污染）。
 

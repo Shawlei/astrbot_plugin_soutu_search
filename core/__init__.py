@@ -5,7 +5,8 @@
 - soutu_client:  搜图Bot酱（soutubot.moe）以图搜图 provider
 - safebooru_client: Safebooru 关键词搜图 provider
 - saucenao_client: SauceNAO 以图反查 provider（可限定库，默认全部活跃库）
-- ascii2d_client: ascii2d 以图反查 provider（覆盖 Pixiv/Twitter 等画师首发站，免 Key）
+- yandex_client:   Yandex 以图反查 provider（覆盖全网及各画师平台，免 Key）
+- ascii2d_client:  ascii2d 以图反查 provider（覆盖 Pixiv/Twitter 等画师首发站，免 Key）
 - cache:         TTL 结果缓存
 - formatter:     统一结果模型（SearchResult/SourceOutcome）与消息块格式化
 """

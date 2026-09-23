@@ -187,6 +187,26 @@ class _StubSaucenao:
         pass
 
 
+class _StubYandex:
+    """Yandex provider 替身（默认启用，避免测试触发真实联网）。"""
+
+    def __init__(self, outcome=None, exc=None):
+        self.calls = []
+        self._outcome = outcome
+        self._exc = exc
+
+    async def search(self, image, **kw):
+        self.calls.append(kw)
+        if self._exc is not None:
+            raise self._exc
+        return self._outcome or SourceOutcome(
+            results=[SearchResult(title="yadx", source="danbooru.donmai.us", url="https://d/1", score=None)]
+        )
+
+    async def close(self):
+        pass
+
+
 class _FakeEvent:
     def __init__(self, text="", with_image=False):
         self.unified_msg_origin = "umo-A"
@@ -433,10 +453,11 @@ class TestDualSourceDispatch(unittest.TestCase):
 
         p.image_source.from_event = fe  # type: ignore[assignment]
         p.image_source.has_image = lambda ev: True  # type: ignore[assignment]
+        p.yandex = _StubYandex()  # type: ignore[assignment]
         return p
 
     def test_both_sources_run_parallel(self):
-        p = self._img_plugin(saucenao_api_key="k")
+        p = self._img_plugin(saucenao_api_key="k", ascii2d_enable=True)
         sa = _StubSaucenao()
         a2d = _StubAscii2d()
         p.saucenao = sa
@@ -451,7 +472,7 @@ class TestDualSourceDispatch(unittest.TestCase):
 
     def test_ascii2d_failure_isolated(self):
         """ascii2d 抛异常，SauceNAO 结果照常展示。"""
-        p = self._img_plugin(saucenao_api_key="k")
+        p = self._img_plugin(saucenao_api_key="k", ascii2d_enable=True)
         sa = _StubSaucenao()
         a2d = _StubAscii2d(exc=RuntimeError("ascii2d boom"))
         p.saucenao = sa
@@ -465,7 +486,7 @@ class TestDualSourceDispatch(unittest.TestCase):
 
     def test_saucenao_failure_isolated(self):
         """SauceNAO 抛异常，ascii2d 结果照常展示。"""
-        p = self._img_plugin(saucenao_api_key="k")
+        p = self._img_plugin(saucenao_api_key="k", ascii2d_enable=True)
         sa = _StubSaucenao(exc=RuntimeError("saucenao boom"))
         a2d = _StubAscii2d()
         p.saucenao = sa
@@ -477,7 +498,7 @@ class TestDualSourceDispatch(unittest.TestCase):
         self.assertIn("saucenao boom", text)
 
     def test_both_fail_gives_explicit_messages(self):
-        p = self._img_plugin(saucenao_api_key="k")
+        p = self._img_plugin(saucenao_api_key="k", ascii2d_enable=True)
         p.saucenao = _StubSaucenao(exc=RuntimeError("sa down"))
         p.ascii2d = _StubAscii2d(exc=RuntimeError("a2d down"))
         out = collect(p._dispatch_saucenao(_FakeEvent(), ""))
@@ -487,7 +508,7 @@ class TestDualSourceDispatch(unittest.TestCase):
         self.assertIn("a2d down", text)
 
     def test_key_missing_still_runs_ascii2d(self):
-        p = self._img_plugin()  # 无 key
+        p = self._img_plugin(ascii2d_enable=True)  # 无 key
         sa = _StubSaucenao()
         a2d = _StubAscii2d()
         p.saucenao = sa
@@ -500,7 +521,7 @@ class TestDualSourceDispatch(unittest.TestCase):
         self.assertIn("ascii2d", text)
 
     def test_saucenao_disabled_only_ascii2d(self):
-        p = self._img_plugin(saucenao_enable=False)
+        p = self._img_plugin(saucenao_enable=False, ascii2d_enable=True)
         sa = _StubSaucenao()
         a2d = _StubAscii2d()
         p.saucenao = sa
@@ -521,14 +542,14 @@ class TestDualSourceDispatch(unittest.TestCase):
         self.assertEqual(a2d.calls, [])
 
     def test_both_disabled_config_hint(self):
-        p = self._plugin(saucenao_enable=False, ascii2d_enable=False)
+        p = self._plugin(saucenao_enable=False, yandex_enable=False, ascii2d_enable=False)
         out = collect(p._dispatch_saucenao(_FakeEvent(), ""))
         self.assertEqual(out[0][0], "plain")
         self.assertEqual(out[0][1], ALL_SOURCES_DISABLED_TEXT)
 
     def test_ascii2d_cache_namespace(self):
-        """同图二次反查命中缓存（ascii2d.search 仅调用一次），且与 SauceNAO 命名空间隔离。"""
-        p = self._img_plugin(saucenao_enable=False)
+        """同图二次反查命中缓存（ascii2d.search 仅调用一次），且与其他源命名空间隔离。"""
+        p = self._img_plugin(saucenao_enable=False, ascii2d_enable=True)
         a2d = _StubAscii2d()
         p.ascii2d = a2d
         collect(p._dispatch_saucenao(_FakeEvent(), ""))
@@ -552,7 +573,9 @@ class TestNewConfig(unittest.TestCase):
     def test_defaults(self):
         p = SoutuSearchPlugin(object(), {})
         self.assertTrue(p.saucenao_enable)
-        self.assertTrue(p.ascii2d_enable)
+        self.assertTrue(p.yandex_enable)
+        self.assertEqual(p.yandex_base_url, "https://yandex.ru")
+        self.assertFalse(p.ascii2d_enable, "ascii2d 因 Cloudflare 拦截默认关闭")
         self.assertEqual(p.ascii2d_base_url, "https://ascii2d.net")
         self.assertEqual(p.ascii2d.base_url, "https://ascii2d.net")
         self.assertFalse(p.ascii2d_bovw)
@@ -563,11 +586,13 @@ class TestNewConfig(unittest.TestCase):
             "ascii2d_enable": "true",
             "ascii2d_base_url": "https://mirror.example.com",
             "ascii2d_bovw": "yes",
+            "yandex_base_url": "https://yandex.example.com",
         })
         self.assertFalse(p.saucenao_enable)
         self.assertTrue(p.ascii2d_enable)
         self.assertEqual(p.ascii2d.base_url, "https://mirror.example.com")
         self.assertTrue(p.ascii2d_bovw)
+        self.assertEqual(p.yandex.base_url, "https://yandex.example.com")
 
     def test_invalid_types_fall_back(self):
         p = SoutuSearchPlugin(object(), {
@@ -575,20 +600,27 @@ class TestNewConfig(unittest.TestCase):
             "ascii2d_enable": object(),
             "ascii2d_base_url": "",
             "ascii2d_bovw": None,
+            "yandex_enable": object(),
+            "yandex_base_url": "",
         })
         self.assertTrue(p.saucenao_enable, "非法值应回退默认 True")
-        self.assertTrue(p.ascii2d_enable, "非法值应回退默认 True")
+        self.assertFalse(p.ascii2d_enable, "非法值应回退默认 False")
+        self.assertTrue(p.yandex_enable, "非法值应回退默认 True")
         self.assertEqual(p.ascii2d_base_url, "https://ascii2d.net")
+        self.assertEqual(p.yandex_base_url, "https://yandex.ru")
         self.assertFalse(p.ascii2d_bovw)
 
     def test_schema_has_new_keys(self):
         schema = json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-        self.assertEqual(len(schema), 24)
+        self.assertEqual(len(schema), 26)
         self.assertEqual(schema["saucenao_enable"]["default"], True)
-        self.assertEqual(schema["ascii2d_enable"]["default"], True)
+        self.assertEqual(schema["yandex_enable"]["default"], True)
+        self.assertEqual(schema["yandex_base_url"]["default"], "https://yandex.ru")
+        self.assertEqual(schema["ascii2d_enable"]["default"], False)
         self.assertEqual(schema["ascii2d_base_url"]["default"], "https://ascii2d.net")
         self.assertEqual(schema["ascii2d_bovw"]["default"], False)
-        for key in ("saucenao_enable", "ascii2d_enable", "ascii2d_base_url", "ascii2d_bovw"):
+        for key in ("saucenao_enable", "yandex_enable", "yandex_base_url",
+                    "ascii2d_enable", "ascii2d_base_url", "ascii2d_bovw"):
             self.assertIn("description", schema[key])
             self.assertIn("hint", schema[key])
 

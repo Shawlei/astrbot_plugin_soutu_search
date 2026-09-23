@@ -4,7 +4,8 @@
 1. **以图搜本子** → ``<前缀>搜本``（别名 ``搜本子`` / ``soutu`` / ``找图``）上传图片调用
    soutubot.moe（搜图Bot酱）做相似检索。**只接受图片**（消息图片 / 引用图片 / 图片直链）。
 2. **搜图（自动判别）** → ``<前缀>搜图``（别名 ``pixiv`` / ``saucenao``）：
-   - 有图片 / 图片直链 → **双源并行**反查出处（SauceNAO + ascii2d；ascii2d 无需 API Key）；
+   - 有图片 / 图片直链 → **多源并行**反查出处（Yandex + SauceNAO + ascii2d；Yandex 免 Key 默认开、
+     ascii2d 免 Key 默认关，SauceNAO 需 API Key）；
    - 纯关键词 → 调用 Safebooru DAPI 按标签检索（**不需要** API Key）。
 
 帮助指令：``搜本帮助`` / ``搜图帮助``（各有英文别名，见 ``_COMMAND_NAMES``）。
@@ -29,9 +30,17 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
-from .core.cache import TTLCache, make_ascii2d_key, make_image_key, make_saucenao_key, make_tags_key
+from .core.cache import (
+    TTLCache,
+    make_ascii2d_key,
+    make_image_key,
+    make_saucenao_key,
+    make_tags_key,
+    make_yandex_key,
+)
 from .core.formatter import SourceOutcome, blocks_to_components, format_outcome, truncate_blocks
 from .core.ascii2d_client import Ascii2dClient
+from .core.yandex_client import YandexClient
 from .core.image_source import ImagePayload, ImageSource, is_http_url
 from .core.safebooru_client import SafebooruClient
 from .core.saucenao_client import (
@@ -85,11 +94,10 @@ SAUCENAO_KEY_MISSING_TEXT = (
     "https://saucenao.com/user.php?page=search-api"
 )
 
-# 两个图片反查源都被关闭时的提示（不要静默返回空结果）
+# 图片反查源都被关闭时的提示（不要静默返回空结果）
 ALL_SOURCES_DISABLED_TEXT = (
-    "⚙️ 图片反查的两个来源（SauceNAO 与 ascii2d）都已在插件配置中关闭。\n"
-    "请至少启用其中一个：`saucenao_enable` 或 `ascii2d_enable`。\n"
-    "（提示：ascii2d 不需要 API Key，只需能访问 ascii2d.net。）"
+    "⚙️ 图片反查的所有来源（SauceNAO、Yandex 与 ascii2d）都已在插件配置中关闭。\n"
+    "请至少启用其中一个（推荐默认启用 `yandex_enable`，免 Key 且全网检索能力极强）。"
 )
 
 # SauceNAO 未附图时的用法提示
@@ -221,7 +229,7 @@ def _render_book_keyword_hint(prefix: str) -> str:
 
 _HELP_TEMPLATE = """📖 搜图用法
 
-① 以图反查出处（双源并行：SauceNAO + ascii2d）
+① 以图反查出处（多源并行：Yandex + SauceNAO + ascii2d）
    · 发送图片并附带 `{p}搜图`，或用 `{p}搜图 <图片链接>`
    · 别名：`pixiv`、`saucenao`
 ② 关键词搜图（Safebooru）
@@ -230,10 +238,12 @@ _HELP_TEMPLATE = """📖 搜图用法
 ④ 查看帮助：`{p}搜图帮助`
 
 说明：
+· ① Yandex 免 Key、默认开启，对**近期画师新作**与跨平台转载的召回率最高
 · ① SauceNAO 需先在插件配置中填写 `saucenao_api_key`（申请：https://saucenao.com/user.php?page=search-api）；
-  未配置时会**跳过 SauceNAO 但仍运行 ascii2d**（ascii2d 不需要任何 Key）
-· ① ascii2d 覆盖 Pixiv/Twitter 等画师首发站，对**近期图**更有效；需能访问日本站点（大陆可能需要代理）
+  未配置时会**跳过 SauceNAO 但仍运行 Yandex**
 · ① SauceNAO 默认检索**全部活跃库**（`saucenao_db_mask=0`）；免费配额 150 次/天、4 次/30 秒
+· ① ascii2d 覆盖 Pixiv/Twitter 等画师首发站，但近期被 Cloudflare 严格拦截，默认关闭；
+  有稳定日本代理可开启
 · ② 走 Safebooru 图库，不需要 API Key
 · 搜图**只能通过指令触发**，群内有人发图不会自动搜图
 · 默认只回复文字与来源链接，不发送缩略图"""
@@ -387,9 +397,13 @@ class SoutuSearchPlugin(Star):
         self.soutu_base_url = _to_str(cfg.get("soutu_base_url"), "https://soutubot.moe")
         self.safebooru_base_url = _to_str(cfg.get("safebooru_base_url"), "https://safebooru.org")
 
-        # ---- 图片反查「双源」配置（全部带默认值；两个源默认都开）----
+        # ---- 图片反查「多源」配置（全部带默认值）----
         self.saucenao_enable = _to_bool(cfg.get("saucenao_enable"), True)
-        self.ascii2d_enable = _to_bool(cfg.get("ascii2d_enable"), True)
+        # Yandex 免 Key，默认开启（对近年画师新作 / 跨平台转载的召回率最高）
+        self.yandex_enable = _to_bool(cfg.get("yandex_enable"), True)
+        self.yandex_base_url = _to_str(cfg.get("yandex_base_url"), "https://yandex.ru")
+        # ascii2d 默认关闭：近期启用严苛的 Cloudflare WAF，常规网络/代理易 403
+        self.ascii2d_enable = _to_bool(cfg.get("ascii2d_enable"), False)
         # ascii2d 无需 API Key；base_url 可改镜像 / 反代
         self.ascii2d_base_url = _to_str(cfg.get("ascii2d_base_url"), "https://ascii2d.net")
         self.ascii2d_bovw = _to_bool(cfg.get("ascii2d_bovw"), False)
@@ -444,6 +458,11 @@ class SoutuSearchPlugin(Star):
             hide=self.saucenao_hide,
             timeout=self.request_timeout,
         )
+        self.yandex = YandexClient(
+            base_url=self.yandex_base_url,
+            timeout=self.request_timeout,
+            top_k=max(self.result_count * 3, 9),
+        )
         self.ascii2d = Ascii2dClient(
             base_url=self.ascii2d_base_url,
             bovw=self.ascii2d_bovw,
@@ -474,6 +493,11 @@ class SoutuSearchPlugin(Star):
             self.saucenao_min_similarity,
             self.saucenao_hide,
             "已配置" if self.saucenao_api_key else "未配置",
+        )
+        logger.info(
+            "[搜图] Yandex(搜图-以图反查): enable=%s, base=%s",
+            self.yandex_enable,
+            self.yandex_base_url,
         )
         logger.info(
             "[搜图] ascii2d(搜图-以图反查): enable=%s, base=%s, bovw=%s",
@@ -671,6 +695,7 @@ class SoutuSearchPlugin(Star):
             ("soutu", self.soutu),
             ("booru", self.booru),
             ("saucenao", self.saucenao),
+            ("yandex", self.yandex),
             ("ascii2d", self.ascii2d),
         ):
             try:
@@ -899,19 +924,19 @@ class SoutuSearchPlugin(Star):
         yield self._emit(event, blocks)
 
     # ------------------------------------------------------------------ #
-    # 图片反查调度（「搜图」的以图分支）：SauceNAO + ascii2d **双源并行**
+    # 图片反查调度（「搜图」的以图分支）：SauceNAO + Yandex + ascii2d **多源并行**
     # ------------------------------------------------------------------ #
     async def _dispatch_saucenao(self, event: AstrMessageEvent, text: str = ""):
-        """「搜图」图片分支调度：**双源并行**反查（SauceNAO + ascii2d）。
+        """「搜图」图片分支调度：**多源并行**反查（SauceNAO + Yandex + ascii2d）。
 
         流程：
         1. 文本子帮助 → 回「搜图帮助」；
-        2. 两个源都关 → 回明确的配置提示（**不静默返回空**）；
-        3. 判断是否需要图片字节：只要 ascii2d 启用、或 SauceNAO 启用且已配置 key，就需要；
+        2. 所有源都关 → 回明确的配置提示（**不静默返回空**）；
+        3. 判断是否需要图片字节：任一已启用的源需要图片即需要；
            需要时先取图（消息图片 → http 图片直链），取不到给可读提示；
-        4. 并行执行已启用的源（``asyncio.gather`` + ``return_exceptions=True``，**必须并行**：
-           ascii2d 单次可能 10~20 秒，串行会翻倍）；**单源失败绝不影响另一源**；
-        5. SauceNAO 未配置 key 时**跳过该源但仍跑 ascii2d**，并在 SauceNAO 段落位置给出引导。
+        4. 并行执行已启用的源（``asyncio.gather`` + ``return_exceptions=True``，**必须并行**）；
+           **单源失败绝不影响其他源**；
+        5. SauceNAO 未配置 key 时**跳过该源但仍跑其余源**，并在 SauceNAO 段落位置给出引导。
 
         .. note::
            保持方法名不变（历史调用点/测试直接调用 ``_dispatch_saucenao``）。
@@ -921,19 +946,21 @@ class SoutuSearchPlugin(Star):
             return
 
         sauce_on = self.saucenao_enable
+        yandex_on = self.yandex_enable
         ascii_on = self.ascii2d_enable
-        if not (sauce_on or ascii_on):
+        if not (sauce_on or yandex_on or ascii_on):
             yield event.plain_result(ALL_SOURCES_DISABLED_TEXT)
             return
 
         # 只有「实际要跑的源」才需要图片字节（避免无谓下载）
-        need_image = ascii_on or (sauce_on and bool(self.saucenao_api_key))
+        sauce_will_run = sauce_on and bool(self.saucenao_api_key)
+        need_image = yandex_on or ascii_on or sauce_will_run
         payload: ImagePayload | None = None
         if need_image:
             try:
                 payload = await self.image_source.from_event(event)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("[搜图] 取图失败（双源反查）: %s", exc)
+                logger.warning("[搜图] 取图失败（多源反查）: %s", exc)
                 payload = None
 
             # 帮助文案宣称支持 `<指令> <图片链接>`，这里真正落实该路径（含 SSRF 防护）
@@ -941,7 +968,7 @@ class SoutuSearchPlugin(Star):
                 try:
                     payload = await self.image_source.from_source(text)
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("[搜图] 图片链接获取失败（双源反查）: %s", exc)
+                    logger.warning("[搜图] 图片链接获取失败（多源反查）: %s", exc)
                     yield event.plain_result(IMAGE_URL_FETCH_FAIL_TEXT.format(err=exc))
                     return
 
@@ -949,16 +976,19 @@ class SoutuSearchPlugin(Star):
                 yield event.plain_result(SAUCENAO_NO_IMAGE_TEXT.format(p=self._help_prefix()))
                 return
         else:
-            # 一个源都不需要图片（仅 SauceNAO 启用且未配置 key）→ 直接给引导，零下载
+            # 所有源都不需要图片（仅 SauceNAO 启用且未配置 key）→ 直接给引导，零下载
             yield self._emit(event, self._compose_blocks(self._no_key_guide_blocks(), elapsed=0.0))
             return
 
         # 并行执行已启用的源
         names: list[str] = []
         coros: list = []
-        if sauce_on and self.saucenao_api_key:
+        if sauce_will_run:
             names.append("saucenao")
             coros.append(self._run_saucenao_section(payload))
+        if yandex_on:
+            names.append("yandex")
+            coros.append(self._run_yandex_section(payload))
         if ascii_on:
             names.append("ascii2d")
             coros.append(self._run_ascii2d_section(payload))
@@ -968,13 +998,15 @@ class SoutuSearchPlugin(Star):
         elapsed = time.perf_counter() - started
         section_map = dict(zip(names, gathered))
 
-        # 组装分节输出（固定顺序：SauceNAO 段 → ascii2d 段）
+        # 组装分节输出（固定顺序：SauceNAO 段 → Yandex 段 → ascii2d 段）
         section_blocks: list[dict] = []
         if sauce_on:
             if not self.saucenao_api_key:
                 section_blocks.extend(self._no_key_guide_blocks())
             else:
                 section_blocks.extend(self._render_section_result("SauceNAO", section_map.get("saucenao")))
+        if yandex_on:
+            section_blocks.extend(self._render_section_result("Yandex", section_map.get("yandex")))
         if ascii_on:
             section_blocks.extend(self._render_section_result("ascii2d", section_map.get("ascii2d")))
 
@@ -1022,6 +1054,16 @@ class SoutuSearchPlugin(Star):
         self.cache.set(cache_key, outcome)
         return outcome, ""
 
+    async def _run_yandex_section(self, payload: ImagePayload):
+        """执行 Yandex 反查，返回 ``(outcome, note)``（独立缓存命名空间）。"""
+        cache_key = make_yandex_key(payload.data)
+        outcome: SourceOutcome | None = self.cache.get(cache_key)
+        if outcome is not None:
+            return outcome, "（缓存）"
+        outcome = await self.yandex.search(payload.data, filename=payload.filename, mime=payload.mime)
+        self.cache.set(cache_key, outcome)
+        return outcome, ""
+
     async def _run_ascii2d_section(self, payload: ImagePayload):
         """执行 ascii2d 反查，返回 ``(outcome, note)``（独立缓存命名空间，含 bovw 维度）。"""
         cache_key = make_ascii2d_key(payload.data, bovw=self.ascii2d_bovw)
@@ -1031,10 +1073,6 @@ class SoutuSearchPlugin(Star):
         outcome = await self.ascii2d.search(payload.data, filename=payload.filename, mime=payload.mime)
         self.cache.set(cache_key, outcome)
         return outcome, ""
-
-    # ------------------------------------------------------------------ #
-    # 工具方法
-    # ------------------------------------------------------------------ #
 
     # ------------------------------------------------------------------ #
     # 工具方法

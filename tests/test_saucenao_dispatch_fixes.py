@@ -167,13 +167,27 @@ def _chain_text(result) -> str:
         return payload
     return "\n".join(getattr(c, "text", "") for c in payload)
 
+class _StubYandex:
+    """Yandex provider 替身（默认启用，避免测试触发真实联网）。"""
+
+    def __init__(self):
+        self.calls = []
+
+    async def search(self, image, **kw):
+        self.calls.append(kw)
+        return _outcome()
+
+    async def close(self):
+        pass
+
 
 # ===========================================================================
 # P2-1：图片直链真正被处理
 # ===========================================================================
 class TestImageUrlDispatch(unittest.TestCase):
     def _plugin_with_source(self, calls):
-        p = SoutuSearchPlugin(object(), {"saucenao_api_key": "k"})
+        p = SoutuSearchPlugin(object(), {"saucenao_api_key": "k", "ascii2d_enable": True})
+        p.yandex = _StubYandex()
 
         async def fake_from_source(src):
             calls.append(src)
@@ -198,6 +212,7 @@ class TestImageUrlDispatch(unittest.TestCase):
 
     def test_search_url_fetch_failure_gives_readable_message(self):
         p = SoutuSearchPlugin(object(), {"saucenao_api_key": "k"})
+        p.yandex = _StubYandex()
 
         async def boom(src):
             raise RuntimeError("出于安全考虑，拒绝访问内网/保留地址")
@@ -210,6 +225,7 @@ class TestImageUrlDispatch(unittest.TestCase):
 
     def test_search_no_image_no_url_still_usage_hint(self):
         p = SoutuSearchPlugin(object(), {"saucenao_api_key": "k"})
+        p.yandex = _StubYandex()
         out = collect(p.sou_cmd(FakeEvent(), args=""))
         self.assertEqual(out[0][1], HELP_TEXT)
 
@@ -257,7 +273,8 @@ class TestImageUrlDispatch(unittest.TestCase):
         0.6.0 起 ascii2d 无需 Key，故即使没配 SauceNAO key 也应继续反查（需下载图片）。
         """
         calls = []
-        p = SoutuSearchPlugin(object(), {})  # 无 api_key
+        p = SoutuSearchPlugin(object(), {"ascii2d_enable": True})  # 无 api_key
+        p.yandex = _StubYandex()
 
         async def fake_from_source(src):
             calls.append(src)
@@ -284,6 +301,7 @@ class TestImageUrlDispatch(unittest.TestCase):
     def test_help_text_claims_image_url_support(self):
         # 帮助文案宣称支持图片链接（现在确已实现）
         p = SoutuSearchPlugin(object(), {})
+        p.yandex = _StubYandex()
         self.assertIn("搜图 <图片链接>", p._help_text())
 
 
