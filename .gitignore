@@ -1,0 +1,25 @@
+# Python 字节码与缓存
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# 测试桩曾误建的垃圾目录（见 tests/test_core.py 的 StarTools 说明）
+MagicMock/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 日志与操作系统杂项
+*.log
+.DS_Store
+Thumbs.db
+
+# 插件运行期数据目录（_resolve_data_dir 的降级目录）
+data/
+
+# 编辑器
+.idea/
+.vscode/

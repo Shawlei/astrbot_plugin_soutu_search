@@ -1,0 +1,152 @@
+{
+  "enable_auto_search": {
+    "description": "自动搜图",
+    "hint": "开启后，群聊/私聊中有人发图片会自动触发以图搜图（受下方冷却时间限制）",
+    "type": "bool",
+    "default": true
+  },
+  "nsfw_send_image": {
+    "description": "发送缩略图（NSFW 开关）",
+    "hint": "默认关闭：回复只包含文字与来源链接，不含任何图片组件，避免触发平台风控。开启后会在回复中附带缩略图",
+    "type": "bool",
+    "default": false,
+    "obvious_hint": true
+  },
+  "search_factor": {
+    "description": "以图搜图模式",
+    "hint": "1.2 = 常规（召回更多）；1.4 = 严格（更精确，但更容易无结果）",
+    "type": "string",
+    "options": [
+      "1.2",
+      "1.4"
+    ],
+    "default": "1.2"
+  },
+  "result_count": {
+    "description": "返回结果条数",
+    "hint": "每次最多展示的命中条数",
+    "type": "int",
+    "default": 3,
+    "slider": {
+      "min": 1,
+      "max": 20,
+      "step": 1
+    }
+  },
+  "min_score": {
+    "description": "最低相似度",
+    "hint": "低于此分数的命中不展示（soutubot 主列表分档阈值通常为 28）",
+    "type": "int",
+    "default": 28,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 1
+    }
+  },
+  "auto_search_cooldown": {
+    "description": "自动搜图冷却（秒）",
+    "hint": "同一会话（群/私聊）内两次自动搜图的最小间隔，防止刷屏",
+    "type": "int",
+    "default": 30,
+    "slider": {
+      "min": 0,
+      "max": 600,
+      "step": 5
+    }
+  },
+  "cache_ttl": {
+    "description": "结果缓存时长（秒）",
+    "hint": "相同图片 / 相同关键词在此时间内的重复搜索直接复用缓存；设为 0 可关闭缓存",
+    "type": "int",
+    "default": 3600,
+    "slider": {
+      "min": 0,
+      "max": 86400,
+      "step": 60
+    }
+  },
+  "request_timeout": {
+    "description": "请求超时（秒）",
+    "hint": "调用外部搜图接口与下载图片的超时时间",
+    "type": "int",
+    "default": 30,
+    "slider": {
+      "min": 5,
+      "max": 120,
+      "step": 1
+    }
+  },
+  "max_reply_chars": {
+    "description": "回复正文长度上限（字符）",
+    "hint": "回复文本超过此长度会按字符边界截断并追加提示，避免超出聊天平台单条消息上限。设为 0 表示不限制",
+    "type": "int",
+    "default": 1200,
+    "slider": {
+      "min": 0,
+      "max": 4500,
+      "step": 100
+    }
+  },
+  "max_image_bytes": {
+    "description": "单张图片大小上限（字节）",
+    "hint": "下载/读取的图片超过此大小将拒绝，默认 10485760（10MB），用于防止超大文件耗尽资源",
+    "type": "int",
+    "default": 10485760
+  },
+  "safebooru_rating": {
+    "description": "关键词搜图评级过滤",
+    "hint": "safe = 仅返回安全评级；all = 不过滤（可能包含敏感内容）",
+    "type": "string",
+    "options": [
+      "safe",
+      "all"
+    ],
+    "default": "safe"
+  },
+  "soutu_base_url": {
+    "description": "soutubot.moe 接口地址",
+    "hint": "以图搜图服务地址，一般无需修改",
+    "type": "string",
+    "default": "https://soutubot.moe"
+  },
+  "safebooru_base_url": {
+    "description": "Safebooru 接口地址",
+    "hint": "关键词搜图服务地址，一般无需修改",
+    "type": "string",
+    "default": "https://safebooru.org"
+  },
+  "access_mode": {
+    "description": "访问控制模式",
+    "hint": "all = 不限制（默认，向后兼容，下方白/黑名单一律被忽略）；whitelist = 仅白名单内的会话可用；blacklist = 黑名单内的会话禁用。注意：whitelist 列表为空时会 fail-closed（所有会话都不可用），请务必先填写白名单再启用该模式",
+    "type": "string",
+    "options": [
+      "all",
+      "whitelist",
+      "blacklist"
+    ],
+    "default": "all"
+  },
+  "whitelist": {
+    "description": "白名单（允许使用本插件的会话/群）",
+    "hint": "仅当 access_mode=whitelist 时生效。可填群号、会话唯一 ID（unified_msg_origin umo）或发送者 ID，任一命中即放行。⚠️ 列表为空时 fail-closed：所有会话都将无法使用本插件。access_mode 为 all/blacklist 时本项被忽略",
+    "type": "list",
+    "default": []
+  },
+  "blacklist": {
+    "description": "黑名单（禁止使用本插件的会话/群）",
+    "hint": "仅当 access_mode=blacklist 时生效。可填群号、会话唯一 ID（umo）或发送者 ID，任一命中即禁用。列表为空 = 不限制（放行全部）。access_mode 为 all/whitelist 时本项被忽略",
+    "type": "list",
+    "default": []
+  },
+  "access_scope": {
+    "description": "访问控制范围",
+    "hint": "all = 指令与自动搜图都受白/黑名单限制（默认）；auto = 仅限制自动搜图、指令照常响应（适合「群内不希望机器人自动刷图，但允许手动 /搜图」）。仅当 access_mode 不为 all 时有意义",
+    "type": "string",
+    "options": [
+      "all",
+      "auto"
+    ],
+    "default": "all"
+  }
+}

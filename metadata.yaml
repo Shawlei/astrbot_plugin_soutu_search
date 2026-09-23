@@ -1,0 +1,12 @@
+name: astrbot_plugin_soutu_search
+display_name: 搜图 (以图搜图 / 关键词搜图)
+desc: >
+  为 AstrBot 提供搜图能力：发送图片即可「以图搜图」（对接 soutubot.moe），
+  或用 `/搜图 <关键词>` 做关键词搜图（对接 Safebooru）。
+  支持被动监听自动搜图、结果 TTL 缓存、冷却防刷屏，
+  并默认采用「只回文字与来源链接」的安全策略（缩略图默认关闭，避免风控）。
+version: 0.1.0
+author: Shawlei
+astrbot_version: ">=4.26.0,<5"
+repo: https://github.com/Shawlei/astrbot_plugin_soutu_search
+short_desc: 发送图片以图搜图，或用关键词搜图（对接 soutubot.moe 与 Safebooru）
