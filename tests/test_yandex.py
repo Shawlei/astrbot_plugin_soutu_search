@@ -34,7 +34,14 @@ from astrbot_plugin_soutu_search.core.formatter import (  # noqa: E402
 from astrbot_plugin_soutu_search.core.image_source import ImagePayload  # noqa: E402
 from astrbot_plugin_soutu_search.core.yandex_client import (  # noqa: E402
     DEFAULT_BASE_URL,
+    DEFAULT_MAX_PER_DOMAIN,
+    LEVEL_HIGH,
+    LEVEL_LOW,
+    LEVEL_NEUTRAL,
+    SIMILAR_ONLY_WARNING,
     YandexClient,
+    build_yandex_warnings,
+    classify_source,
     clean_url,
     parse_yandex_html,
 )
@@ -164,10 +171,185 @@ class TestParseHtml(unittest.TestCase):
         html = '<html><div data-state="not-json"></div></html>'
         self.assertEqual(parse_yandex_html(html), [])
 
+    def test_residual_structure_never_raises(self):
+        """残结构（cbirSites 非 dict / thumb 非 dict / 非 dict 条目）必须优雅降级，绝不抛异常。"""
+        # cbirSites 是 list（而非 dict）；state 里的引号已被 HTML 转义为 &quot;
+        html1 = _make_state_html(sites=[]).replace(
+            "&quot;cbirSites&quot;: {&quot;sites&quot;: []}", "&quot;cbirSites&quot;: []"
+        )
+        self.assertEqual(parse_yandex_html(html1), [])
+
+        # sites 里混入非 dict 项 + thumb 为非 dict
+        sites = [
+            "garbage",
+            dict(_SITE, thumb="not-a-dict"),
+            None,
+            dict(_SITE, url="https://donmai.us/posts/2"),
+        ]
+        results = parse_yandex_html(_make_state_html(sites=sites))
+        self.assertEqual(len(results), 2)  # 仅两条合法 dict
+
+        # cbirSimilar 的 thumbs 混入非 dict 项 → 跳过非法项、保留合法项
+        html2 = _make_state_html(sites=[], similar=["bad", {"title": "ok", "linkUrl": "/x"}])
+        res2 = parse_yandex_html(html2)
+        self.assertEqual(len(res2), 1)
+        self.assertEqual(res2[0].source, "yandex-similar")
+
+    def test_non_str_html_returns_empty(self):
+        self.assertEqual(parse_yandex_html(None), [])  # type: ignore[arg-type]
+        self.assertEqual(parse_yandex_html(b"<html></html>"), [])  # type: ignore[arg-type]
+
     def test_top_k_limit(self):
-        sites = [dict(_SITE, url=f"https://e.com/{i}", title=f"t{i}") for i in range(10)]
+        # 用**不同域名**构造，避免被「同域名去重」提前截断，从而真正测 top_k 截断。
+        sites = [
+            dict(_SITE, url=f"https://e{i}.com/{i}", title=f"t{i}", domain=f"e{i}.com")
+            for i in range(10)
+        ]
         results = parse_yandex_html(_make_state_html(sites=sites), top_k=3)
         self.assertEqual(len(results), 3)
+
+
+class TestSourceRanking(unittest.TestCase):
+    """来源质量分级 / 排序 / 域名去重 / 诚实提示（本次修复核心）。"""
+
+    def test_domain_suffix_matching(self):
+        # 后缀匹配：同族子域也要命中（否则 za.pinterest.com / ru.pinterest.com 会漏判）
+        self.assertEqual(classify_source("za.pinterest.com"), LEVEL_LOW)
+        self.assertEqual(classify_source("ru.pinterest.com"), LEVEL_LOW)
+        self.assertEqual(classify_source("in.pinterest.com"), LEVEL_LOW)
+        self.assertEqual(classify_source("pinterest.com"), LEVEL_LOW)
+        self.assertEqual(classify_source("pinterest.ru"), LEVEL_LOW)
+        self.assertEqual(classify_source("pinterest.co.uk"), LEVEL_LOW)
+        self.assertEqual(classify_source("www.pinterest.com"), LEVEL_LOW)
+
+    def test_high_value_suffix_matching(self):
+        self.assertEqual(classify_source("danbooru.donmai.us"), LEVEL_HIGH)
+        self.assertEqual(classify_source("safebooru.donmai.us"), LEVEL_HIGH)
+        self.assertEqual(classify_source("safebooru.org"), LEVEL_HIGH)
+        self.assertEqual(classify_source("donmai.moe"), LEVEL_HIGH)
+        self.assertEqual(classify_source("hijiribe.donmai.us"), LEVEL_HIGH)  # donmai.us 子站
+        self.assertEqual(classify_source("www.pixiv.net"), LEVEL_HIGH)
+        self.assertEqual(classify_source("twitter.com"), LEVEL_HIGH)
+        self.assertEqual(classify_source("x.com"), LEVEL_HIGH)
+
+    def test_unclassified_is_neutral_and_brand_not_confused(self):
+        self.assertEqual(classify_source("example.com"), LEVEL_NEUTRAL)
+        self.assertEqual(classify_source(""), LEVEL_NEUTRAL)
+        # 品牌标签匹配不应误伤「标签不同」的域名
+        self.assertEqual(classify_source("notpinterest.com"), LEVEL_NEUTRAL)
+
+    def test_low_noise_domains(self):
+        for dom in (
+            "reactor.cc",
+            "joyreactor.cc",
+            "tumblr.com",
+            "wattpad.com",
+            "seputarundip.com",
+            "i-model.org",
+        ):
+            self.assertEqual(classify_source(dom), LEVEL_LOW, dom)
+
+    def test_high_value_sorted_before_low(self):
+        sites = [
+            dict(_SITE, url="https://p1.example/pin", domain="ru.pinterest.com", title="pin"),
+            dict(_SITE, url="https://d.example/post/1", domain="danbooru.donmai.us", title="booru"),
+            dict(_SITE, url="https://p2.example/pin", domain="pinterest.com", title="pin2"),
+            dict(_SITE, url="https://s.example/post/2", domain="safebooru.org", title="safebooru"),
+        ]
+        results = parse_yandex_html(_make_state_html(sites=sites), top_k=4)
+        sources = [r.source for r in results]
+        # 高价值一定排在低价值之前
+        self.assertEqual(sources[:2], ["danbooru.donmai.us", "safebooru.org"])
+        self.assertTrue(all(classify_source(s) == LEVEL_HIGH for s in sources[:2]))
+
+    def test_domain_dedup_limits_per_domain(self):
+        sites = [
+            dict(
+                _SITE,
+                url=f"https://danbooru.donmai.us/posts/{i}",
+                domain="danbooru.donmai.us",
+                title=f"t{i}",
+            )
+            for i in range(6)
+        ]
+        results = parse_yandex_html(_make_state_html(sites=sites), top_k=6, max_per_domain=2)
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(r.source == "danbooru.donmai.us" for r in results))
+
+    def test_pinterest_family_collapsed_by_dedup(self):
+        # pinterest 各 TLD 合并为同一桶：最多保留 max_per_domain 条
+        domains = ["pinterest.com", "ru.pinterest.com", "in.pinterest.com", "za.pinterest.com"]
+        sites = [
+            dict(_SITE, url=f"https://x{i}.example/{i}", domain=dom, title=f"t{i}")
+            for i, dom in enumerate(domains)
+        ]
+        results = parse_yandex_html(_make_state_html(sites=sites), top_k=10, max_per_domain=2)
+        self.assertEqual(len(results), 2)
+
+    def test_default_max_per_domain_constant(self):
+        self.assertEqual(DEFAULT_MAX_PER_DOMAIN, 2)
+
+    def test_only_low_sources_not_filtered_to_empty(self):
+        # 兜底：全是低价值来源时也不过滤为空（用户至少应看到相似图线索）
+        sites = [
+            dict(_SITE, url=f"https://p{i}.example/{i}", domain="pinterest.com", title=f"t{i}")
+            for i in range(5)
+        ]
+        results = parse_yandex_html(_make_state_html(sites=sites), top_k=3, max_per_domain=5)
+        self.assertTrue(results)  # 不为空
+        self.assertTrue(all(r.source == "pinterest.com" for r in results))
+
+    def test_mixed_fills_top_k_high_then_neutral_then_low(self):
+        sites = [
+            dict(_SITE, url="https://p.example/1", domain="pinterest.com", title="low"),
+            dict(_SITE, url="https://n.example/1", domain="example.com", title="neutral"),
+            dict(_SITE, url="https://d.example/1", domain="danbooru.donmai.us", title="high"),
+        ]
+        results = parse_yandex_html(_make_state_html(sites=sites), top_k=3)
+        self.assertEqual(
+            [r.source for r in results],
+            ["danbooru.donmai.us", "example.com", "pinterest.com"],
+        )
+
+    def test_results_carry_source_level_extra(self):
+        r = parse_yandex_html(_make_state_html(sites=[_SITE]))[0]
+        self.assertEqual(r.extra.get("source_level"), LEVEL_HIGH)
+
+    # ---- 诚实提示（warnings）----
+    def test_warning_when_all_low(self):
+        results = [SearchResult(title="t", source="pinterest.com", url="https://p/1", extra={})]
+        self.assertEqual(build_yandex_warnings(results), [SIMILAR_ONLY_WARNING])
+
+    def test_no_warning_when_high_present(self):
+        results = [SearchResult(title="t", source="danbooru.donmai.us", url="https://d/1", extra={})]
+        self.assertEqual(build_yandex_warnings(results), [])
+
+    def test_no_warning_when_empty(self):
+        self.assertEqual(build_yandex_warnings([]), [])
+
+    def test_warning_text_has_no_double_prefix(self):
+        # formatter 会统一加 ⚠️ 前缀；此处文案刻意不自带，避免「⚠️ ⚠️」
+        self.assertFalse(SIMILAR_ONLY_WARNING.startswith("⚠️"))
+
+    def test_search_outcome_carries_warning_when_all_low(self):
+        sites = [
+            dict(_SITE, url=f"https://p{i}.example/{i}", domain="pinterest.com", title=f"t{i}")
+            for i in range(3)
+        ]
+        client = YandexClient()
+        session = _FakeSession(_FakeResp(200, _make_state_html(sites=sites)))
+        client._session = session  # type: ignore[assignment]
+        outcome = run(client.search(PNG))
+        self.assertTrue(outcome.results)
+        self.assertEqual(outcome.warnings, [SIMILAR_ONLY_WARNING])
+
+    def test_search_outcome_no_warning_when_high_present(self):
+        client = YandexClient()
+        session = _FakeSession(_FakeResp(200, _make_state_html(sites=[_SITE])))
+        client._session = session  # type: ignore[assignment]
+        outcome = run(client.search(PNG))
+        self.assertTrue(outcome.results)
+        self.assertEqual(outcome.warnings, [])
 
 
 class TestRequestConstruction(unittest.TestCase):

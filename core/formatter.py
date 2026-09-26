@@ -36,6 +36,16 @@ class SourceOutcome:
     meta: dict = field(default_factory=dict)
 
 
+# 来源等级 → 展示标签。仅当 ``SearchResult.extra["source_level"]`` 命中时才渲染，
+# 因此对未标注等级的 provider（SauceNAO / ascii2d / soutubot / safebooru）**零影响**
+# （输出与改动前逐字一致）。当前由 Yandex provider 写入该字段。
+_SOURCE_LEVEL_LABELS: dict[str, str] = {
+    "high": "图库/来源",
+    "neutral": "相关",
+    "low": "相似图",
+}
+
+
 def _result_line(index: int, result: SearchResult) -> str:
     """把单条结果渲染为多行文本（不含缩略图 URL）。"""
     title = result.title.strip() if result.title else "（无标题）"
@@ -43,6 +53,13 @@ def _result_line(index: int, result: SearchResult) -> str:
 
     if result.score is not None:
         line += f" | 相似度 {result.score:.1f}%"
+
+    # 来源等级标签（可选）：让用户一眼分辨「图库/官方来源」与「视觉相似图」。
+    # 无该字段时不追加任何内容，保证与改动前输出一致。
+    level = result.extra.get("source_level") if isinstance(result.extra, dict) else None
+    level_label = _SOURCE_LEVEL_LABELS.get(level) if isinstance(level, str) else None
+    if level_label:
+        line += f" | {level_label}"
 
     extra = result.extra or {}
     page_no = extra.get("page_no")

@@ -93,8 +93,9 @@
 | `saucenao_db_mask` | int | `0` | 数据库位掩码。**`0` = 全部索引（推荐，默认）**；`96` = 仅 Pixiv（旧默认，易只搜出老图）。详见下文「`dbmask` 用法」 |
 | `saucenao_min_similarity` | int | `50` | SauceNAO 最低相似度（0-100）；与 soutubot 的 `min_score` 体系不同，故独立配置 |
 | `saucenao_hide` | int | `0` | SauceNAO 内容过滤：`0`=全显示、`1`=隐藏预期 R18、`2`=隐藏预期可疑、`3`=只留安全 |
-| `yandex_enable` | bool | `true` | 图片反查时是否启用 Yandex 识图（**免 Key，默认开启**；对近期画师新作与跨平台转载召回率最高） |
+| `yandex_enable` | bool | `true` | 图片反查时是否启用 Yandex 识图（**免 Key，默认开启**） |
 | `yandex_base_url` | string | `https://yandex.ru` | Yandex 接口地址（`yandex.ru` 比 `yandex.com` 更稳定、少被限制），可改反代 |
+| `yandex_max_per_domain` | int | `2` | Yandex 结果中**同一域名最多展示几条**（1-10）。用于压制 Pinterest 等搬运站刷屏（详见下方「Yandex 来源质量分选」） |
 | `ascii2d_enable` | bool | `false` | 图片反查时是否启用 ascii2d。**0.6.1 起默认关闭**：ascii2d 近期启用严苛 Cloudflare WAF，常规网络/代理易 403；有稳定日本代理可开启 |
 | `ascii2d_base_url` | string | `https://ascii2d.net` | ascii2d 接口地址，可改镜像/反代 |
 | `ascii2d_bovw` | bool | `false` | ascii2d 特征检索模式（对裁剪/旋转/色调不同的图更有效，但多消耗一次请求且更慢） |
@@ -103,10 +104,32 @@
 | `blacklist` | list | `[]` | 黑名单：禁止使用本插件的会话/群（**空列表 = 不限制**） |
 | `extra_allowed_roots` | list | `[]` | 额外允许读取的本地图片根目录（一般无需填写，仅应对 AstrBot 版本差异导致的临时目录变化） |
 
-> 共 **26** 项配置。命令前缀不在本插件配置中，而是跟随 AstrBot 全局 `wake_prefix`。
+> 共 **27** 项配置。命令前缀不在本插件配置中，而是跟随 AstrBot 全局 `wake_prefix`。
 > `saucenao_db_mask` 非法值（负数/非整数）回退 `96`（保守的 Pixiv 限定，**刻意不退回 `0`**，
 > 以免非法值被静默当成「搜全部」）；`saucenao_min_similarity` 越界回退 `50`；
 > `saucenao_hide` 不在 0-3 回退 `0`；`ascii2d_base_url` / `yandex_base_url` 为空回退官方站点。
+
+#### Yandex 来源质量分选（0.6.2 新增）
+
+Yandex 返回的 `cbirSites` 里混着大量**视觉相似但并不包含该图**的页面（实测某张图的 107 条结果中
+Pinterest 系域名占 57 条，而真正包含该图的图库页面混在中后部）。若直接取前 N 条，用户看到的
+全是 Pinterest 相似图、看不到任何来源。因此插件对 Yandex 结果做了三级分选：
+
+| 等级 | 判据 | 展示标签 |
+|---|---|---|
+| **高价值** | 图库 / 官方 / 画师平台 / 资料站：`danbooru.donmai.us`、`donmai.us|moe`、`safebooru.org`、`yande.re`、`konachan.*`、`gelbooru.com`、`pixiv.net`、`twitter.com`、`x.com`、`skeb.jp`、`artstation.com`、`fanbox.cc`、`fantia.jp`、`misskey.io`、`wikipedia.org`、`fandom.com` 等（**域名后缀匹配**） | `图库/来源` |
+| **中性** | 无法归类的普通站点 | `相关` |
+| **低价值** | Pinterest 全系（品牌标签匹配，覆盖 .com/.ru/.ca/.co/.uk/.za/.in/.fi/.tr/.id… 数十变体）、`tumblr.com`、`reactor.cc`、`joyreactor.cc`、`wattpad.com` 等搬运/聚合站 | `相似图` |
+
+- 排序：**高价值 → 中性 → 低价值**，同级保持 Yandex 原始顺序；
+- 去重：**排序之后**按域名分桶，每桶最多 `yandex_max_per_domain` 条（Pinterest 全系聚成一个桶）；
+- 兜底：高价值不足时按「中性 → 低价值」补足到 `result_count`，**不会因为过滤把结果变空**；
+- 诚实提示：若一次结果里**没有任何高价值来源**（全是相似图），会在结果末尾追加
+  「未找到包含该图的图库来源，以下为视觉相似图（可尝试 SauceNAO 精确反查）」，**不把相似图伪装成来源**。
+
+> ⚠️ **Yandex 的定位**：它强在「有网页引用的图」「找相似图/转载页」，对**二次元插画精确溯源偏弱**
+> （实测某张 P 站图在 Yandex 返回的 107 条结果中，原图所在页面出现 0 次）。
+> **找 P 站/推特画师原帖，请优先配置 `saucenao_api_key` 走 SauceNAO。**
 
 #### 为什么 0.6.1 新增 Yandex、并把 ascii2d 改为默认关闭？
 

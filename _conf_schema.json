@@ -158,6 +158,17 @@
     "type": "string",
     "default": "https://yandex.ru"
   },
+  "yandex_max_per_domain": {
+    "description": "Yandex 同域名结果条数上限",
+    "hint": "同一次 Yandex 反查里，同一域名最多展示几条。Yandex 的相似图会把 Pinterest 等搬运站排在前面且数量极多（实测一次 100+ 条里 Pinterest 系占一半），本插件会优先展示图库/官方来源，并对同一域名（Pinterest 全系合并为一个域）限制条数，避免相似图占满输出。默认 2，至少 1",
+    "type": "int",
+    "default": 2,
+    "slider": {
+      "min": 1,
+      "max": 10,
+      "step": 1
+    }
+  },
   "ascii2d_enable": {
     "description": "启用 ascii2d（图片反查）",
     "hint": "「搜图」图片分支是否启用 ascii2d。默认关闭（因 ascii2d 近期启用严苛的 Cloudflare WAF 拦截，常规网络与代理容易出现 403 阻断或超时；若你有稳定住宅/日本代理可按需开启）",

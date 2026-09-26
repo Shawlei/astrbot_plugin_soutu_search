@@ -4,11 +4,12 @@ desc: >
   为 AstrBot 提供两条搜图指令：「搜本」（别名 搜本子/soutu/找图）以图搜本子，
   对接 soutubot.moe，**只接受图片**；「搜图」（别名 pixiv/saucenao）**自动判别**，
   有图片或图片链接时用 **Yandex + SauceNAO 多源并行**反查图片出处（Yandex 免 Key 默认开启、
-  覆盖全网与画师平台；SauceNAO 需 API Key；ascii2d 可选），纯关键词时用 Safebooru 按标签搜图。
+  结果按来源质量三级分选、压制 Pinterest 搬运噪声；SauceNAO 需 API Key、二次元精确溯源更准；
+  ascii2d 可选），纯关键词时用 Safebooru 按标签搜图。
   支持结果 TTL 缓存，命令前缀跟随 AstrBot 全局配置（wake_prefix）。
   仅通过指令触发（不监听消息、不自动搜图），并默认采用「只回文字与来源链接」的安全策略
   （缩略图默认关闭，避免风控）。
-version: 0.6.1
+version: 0.6.2
 author: Shawlei
 astrbot_version: ">=4.26.0,<5"
 repo: https://github.com/Shawlei/astrbot_plugin_soutu_search

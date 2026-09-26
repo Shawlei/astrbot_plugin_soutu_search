@@ -822,8 +822,8 @@ class TestConfigConsistency(unittest.TestCase):
     def _schema(self):
         return json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
 
-    def test_schema_has_26_keys(self):  # [v0.6.1] 新增 yandex_enable / yandex_base_url，24 -> 26
-        self.assertEqual(len(self._schema()), 26)
+    def test_schema_has_26_keys(self):  # [v0.6.1] 新增 yandex_enable / yandex_base_url，24 -> 26；后 -> 27（新增 yandex_max_per_domain）
+        self.assertEqual(len(self._schema()), 27)
 
     def test_new_keys_present_with_defaults(self):
         schema = self._schema()

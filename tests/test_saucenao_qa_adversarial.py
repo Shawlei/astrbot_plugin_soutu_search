@@ -460,12 +460,12 @@ class TestMaskAndConfig(unittest.TestCase):
         for ok in (0, 1, 2, 3):
             self.assertEqual(resolve_hide(ok), ok)
 
-    def test_plugin_config_26_keys(self):  # [v0.6.1] 新增 yandex_enable / yandex_base_url，24 -> 26
+    def test_plugin_config_26_keys(self):  # [v0.6.1] 新增 yandex_enable / yandex_base_url，24 -> 26；后 -> 27（新增 yandex_max_per_domain）
         schema = json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-        self.assertEqual(len(schema), 26)
+        self.assertEqual(len(schema), 27)
         for k in ("saucenao_api_key", "saucenao_base_url", "saucenao_db_mask",
                   "saucenao_min_similarity", "saucenao_hide",
-                  "saucenao_enable", "yandex_enable", "yandex_base_url",
+                  "saucenao_enable", "yandex_enable", "yandex_base_url", "yandex_max_per_domain",
                   "ascii2d_enable", "ascii2d_base_url", "ascii2d_bovw"):
             self.assertIn(k, schema)
 

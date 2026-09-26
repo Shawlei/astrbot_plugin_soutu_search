@@ -402,6 +402,9 @@ class SoutuSearchPlugin(Star):
         # Yandex 免 Key，默认开启（对近年画师新作 / 跨平台转载的召回率最高）
         self.yandex_enable = _to_bool(cfg.get("yandex_enable"), True)
         self.yandex_base_url = _to_str(cfg.get("yandex_base_url"), "https://yandex.ru")
+        # 同一域名（Pinterest 全系合并为一个域）在一次 Yandex 结果里最多展示的条数，
+        # 避免 19 条 pinterest.com 之类相似图占满输出。默认 2，至少 1。
+        self.yandex_max_per_domain = max(1, _to_int(cfg.get("yandex_max_per_domain"), 2))
         # ascii2d 默认关闭：近期启用严苛的 Cloudflare WAF，常规网络/代理易 403
         self.ascii2d_enable = _to_bool(cfg.get("ascii2d_enable"), False)
         # ascii2d 无需 API Key；base_url 可改镜像 / 反代
@@ -462,6 +465,7 @@ class SoutuSearchPlugin(Star):
             base_url=self.yandex_base_url,
             timeout=self.request_timeout,
             top_k=max(self.result_count * 3, 9),
+            max_per_domain=self.yandex_max_per_domain,
         )
         self.ascii2d = Ascii2dClient(
             base_url=self.ascii2d_base_url,
