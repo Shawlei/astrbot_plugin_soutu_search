@@ -203,6 +203,8 @@ def parse_soutu_response(
                     else None
                 ),
                 "tags": _extract_tags(metadata),
+                "rating": metadata.get("rating") or segment.get("rating"),
+                "nsfw": metadata.get("nsfw"),
                 "low_confidence": low_confidence,
                 "tier": tier,
             }

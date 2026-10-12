@@ -823,7 +823,7 @@ class TestConfigConsistency(unittest.TestCase):
         return json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
 
     def test_schema_has_26_keys(self):  # [v0.6.1] 24 -> 26 -> 27；0.6.3 -> 28（新增 suppress_llm_followup）
-        self.assertEqual(len(self._schema()), 28)
+        self.assertEqual(len(self._schema()), 30)
 
     def test_new_keys_present_with_defaults(self):
         schema = self._schema()

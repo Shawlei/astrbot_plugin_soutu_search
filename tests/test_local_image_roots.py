@@ -295,7 +295,7 @@ class TestConfigConsistency(unittest.TestCase):
         schema = json.loads(CONF_SCHEMA.read_text(encoding="utf-8"))
         schema_keys = set(schema.keys())
         used = self._used_keys()
-        self.assertEqual(len(schema_keys), 28, f"schema 键数应为 28，实际 {len(schema_keys)}")  # [v0.6.2] 27 -> 28（新增 suppress_llm_followup）
+        self.assertEqual(len(schema_keys), 30, f"Expected 30 schema keys, got {len(schema_keys)}")
         self.assertEqual(schema_keys - used, set(), f"定义了但未使用: {schema_keys - used}")
         self.assertEqual(used - schema_keys, set(), f"使用了但未定义: {used - schema_keys}")
 

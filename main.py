@@ -30,6 +30,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
+from .core.ascii2d_client import Ascii2dClient
 from .core.cache import (
     TTLCache,
     make_ascii2d_key,
@@ -38,9 +39,12 @@ from .core.cache import (
     make_tags_key,
     make_yandex_key,
 )
-from .core.formatter import SourceOutcome, blocks_to_components, format_outcome, truncate_blocks
-from .core.ascii2d_client import Ascii2dClient
-from .core.yandex_client import YandexClient
+from .core.formatter import (
+    SourceOutcome,
+    blocks_to_components,
+    format_outcome,
+    truncate_blocks,
+)
 from .core.image_source import ImagePayload, ImageSource, is_http_url
 from .core.safebooru_client import SafebooruClient
 from .core.saucenao_client import (
@@ -51,6 +55,8 @@ from .core.saucenao_client import (
     resolve_min_similarity,
 )
 from .core.soutu_client import SoutuClient
+from .core.thumbnail import prepare_thumbnail_blocks
+from .core.yandex_client import YandexClient
 
 PLUGIN_NAME = "astrbot_plugin_soutu_search"
 
@@ -380,6 +386,10 @@ class SoutuSearchPlugin(Star):
 
         # ---- 读取配置（全部带默认值，缺配置也能跑） ----
         self.nsfw_send_image = _to_bool(cfg.get("nsfw_send_image"), False)
+        self.thumbnail_mosaic = _to_bool(cfg.get("thumbnail_mosaic"), True)
+        self.thumbnail_mosaic_level = min(
+            10, max(0, _to_int(cfg.get("thumbnail_mosaic_level"), 7))
+        )
         # 指令被插件接管后，是否抑制 AstrBot 默认 LLM 请求链路与后续插件 handler（默认开启）。
         # 用于规避「发搜本/搜图指令时，LLM 人格插件（如 AstrNa）又额外回一段人话」的联动抢答。
         self.suppress_llm_followup = _to_bool(cfg.get("suppress_llm_followup"), True)
@@ -912,9 +922,13 @@ class SoutuSearchPlugin(Star):
         blocks = format_outcome(
             outcome,
             nsfw_send_image=self.nsfw_send_image,
+            thumbnail_mosaic=self.thumbnail_mosaic,
             max_results=self.result_count,
             header=header,
             max_chars=self.max_reply_chars,
+        )
+        blocks = await prepare_thumbnail_blocks(
+            blocks, self.image_source, self.thumbnail_mosaic_level, self.max_reply_chars
         )
         yield self._emit(event, blocks)
 
@@ -957,9 +971,13 @@ class SoutuSearchPlugin(Star):
         blocks = format_outcome(
             outcome,
             nsfw_send_image=self.nsfw_send_image,
+            thumbnail_mosaic=self.thumbnail_mosaic,
             max_results=self.result_count,
             header=header,
             max_chars=self.max_reply_chars,
+        )
+        blocks = await prepare_thumbnail_blocks(
+            blocks, self.image_source, self.thumbnail_mosaic_level, self.max_reply_chars
         )
         yield self._emit(event, blocks)
 
@@ -1044,13 +1062,25 @@ class SoutuSearchPlugin(Star):
             if not self.saucenao_api_key:
                 section_blocks.extend(self._no_key_guide_blocks())
             else:
-                section_blocks.extend(self._render_section_result("SauceNAO", section_map.get("saucenao")))
+                section_blocks.extend(
+                    self._render_section_result("SauceNAO", section_map.get("saucenao"))
+                )
         if yandex_on:
-            section_blocks.extend(self._render_section_result("Yandex", section_map.get("yandex")))
+            section_blocks.extend(
+                self._render_section_result("Yandex", section_map.get("yandex"))
+            )
         if ascii_on:
-            section_blocks.extend(self._render_section_result("ascii2d", section_map.get("ascii2d")))
+            section_blocks.extend(
+                self._render_section_result("ascii2d", section_map.get("ascii2d"))
+            )
 
-        yield self._emit(event, self._compose_blocks(section_blocks, elapsed=elapsed))
+        blocks = await prepare_thumbnail_blocks(
+            self._compose_blocks(section_blocks, elapsed=elapsed),
+            self.image_source,
+            self.thumbnail_mosaic_level,
+            self.max_reply_chars,
+        )
+        yield self._emit(event, blocks)
 
     def _compose_blocks(self, section_blocks: list[dict], *, elapsed: float) -> list[dict]:
         """加统一头行 + 分节内容，并对**整条消息**做一次字符截断。"""
@@ -1079,6 +1109,7 @@ class SoutuSearchPlugin(Star):
         return format_outcome(
             outcome,
             nsfw_send_image=self.nsfw_send_image,
+            thumbnail_mosaic=self.thumbnail_mosaic,
             max_results=self.result_count,
             header=f"【{label}】命中 {len(outcome.results)} 条{note}",
             max_chars=0,  # 分节不截断，整条消息最后统一截断
