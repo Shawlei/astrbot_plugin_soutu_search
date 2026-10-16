@@ -11,7 +11,7 @@
 - 命中判定：``results[].path_segments`` 非空才算命中
 - 相似度阈值：``factor==1.4`` 时为 35，否则为 45；低于阈值标注「低置信度」
 - 结果分档：``score >= 28`` 进主列表，``< 28`` 归为低分结果
-- 标题回退链：``metadata.title.primary`` → ``metadata.title``(平铺字符串) → ``metadata.title.japanese_or_alias``
+- 标题回退链：``metadata.title.japanese_or_alias`` → ``metadata.title.primary`` → ``metadata.title``(平铺字符串)
 - 链接优先级：``page_url`` → ``chapter_url`` → ``source_url`` → ``metadata.source.url``
 - 所有字段均以 ``.get()`` 取值并给默认值，绝不因字段缺失抛 ``KeyError``
 """
@@ -91,14 +91,14 @@ def extract_title(metadata: dict) -> str:
     if isinstance(title, str):
         return title.strip()
 
-    # 形态二：结构化 dict（primary -> japanese_or_alias）
+    # 形态二：结构化 dict（japanese_or_alias -> primary）
     if isinstance(title, dict):
-        primary = title.get("primary")
-        if isinstance(primary, str) and primary.strip():
-            return primary.strip()
         alias = title.get("japanese_or_alias")
         if isinstance(alias, str) and alias.strip():
             return alias.strip()
+        primary = title.get("primary")
+        if isinstance(primary, str) and primary.strip():
+            return primary.strip()
     return ""
 
 

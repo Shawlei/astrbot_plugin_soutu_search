@@ -120,7 +120,7 @@ class TestRealPayload(unittest.TestCase):
 class TestFallbacks(unittest.TestCase):
     def test_title_chain_three_variants(self):
         # 变体1：结构化 primary
-        self.assertEqual(extract_title({"title": {"primary": "PR", "japanese_or_alias": "JA"}}), "PR")
+        self.assertEqual(extract_title({"title": {"primary": "PR", "japanese_or_alias": "JA"}}), "JA")
         # 变体2：平铺字符串
         self.assertEqual(extract_title({"title": "FLAT"}), "FLAT")
         # 变体3：仅 japanese_or_alias

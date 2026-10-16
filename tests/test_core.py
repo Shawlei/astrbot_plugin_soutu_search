@@ -198,7 +198,7 @@ class TestSoutuParsing(unittest.TestCase):
         outcome = parse_soutu_response(payload, factor="1.2", min_score=28)
         self.assertEqual(len(outcome.results), 1)
         r = outcome.results[0]
-        self.assertEqual(r.title, "Primary Title")
+        self.assertEqual(r.title, "[JP] Title")
         self.assertEqual(r.url, "https://nhentai.net/g/443172/212/")
         self.assertEqual(r.source, "NH本子")
         self.assertAlmostEqual(r.score, 84.27, places=2)
@@ -288,7 +288,7 @@ class TestSoutuParsing(unittest.TestCase):
         o = parse_soutu_response({"results": [make_result(50.0, [seg])]}, "1.2", 28)
         self.assertEqual(o.results[0].title, "")
         # 纯函数直测
-        self.assertEqual(extract_title({"title": {"primary": "P", "japanese_or_alias": "A"}}), "P")
+        self.assertEqual(extract_title({"title": {"primary": "P", "japanese_or_alias": "A"}}), "A")
         self.assertEqual(extract_title({"title": "S"}), "S")
         self.assertEqual(extract_title({}), "")
 

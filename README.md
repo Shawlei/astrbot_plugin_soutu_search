@@ -442,7 +442,7 @@ class SourceOutcome:
 - 命中判定：`results[].path_segments` 非空才算命中
 - 置信度阈值：`factor == 1.4` 时为 **35**，否则为 **45**；低于阈值标注「⚠️低置信度」
 - 结果分档：`score >= 28` 进主列表，`< 28` 归为低分结果（受 `min_score` 过滤）
-- 标题回退链：`metadata.title.primary` → `metadata.title`(平铺字符串) → `metadata.title.japanese_or_alias`
+- 标题回退链（0.6.4 起）：`metadata.title.japanese_or_alias`（日文原名）→ `metadata.title.primary`（英文原名，无日文名的英文作品走此路）→ `metadata.title`(平铺字符串)
 - 链接优先级：`page_url` → `chapter_url` → `source_url` → `metadata.source.url`
 - 所有字段均以 `.get()` 取值并给默认值，字段缺失不抛 `KeyError`
 
