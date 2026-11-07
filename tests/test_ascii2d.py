@@ -612,7 +612,7 @@ class TestNewConfig(unittest.TestCase):
 
     def test_schema_has_new_keys(self):
         schema = json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-        self.assertEqual(len(schema), 28)  # [v0.6.2] 27；+ suppress_llm_followup（0.6.3）
+        self.assertEqual(len(schema), 30)  # Includes both thumbnail mosaic settings.
         self.assertEqual(schema["saucenao_enable"]["default"], True)
         self.assertEqual(schema["yandex_enable"]["default"], True)
         self.assertEqual(schema["yandex_base_url"]["default"], "https://yandex.ru")

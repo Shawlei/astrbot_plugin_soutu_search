@@ -462,7 +462,7 @@ class TestMaskAndConfig(unittest.TestCase):
 
     def test_plugin_config_26_keys(self):  # [v0.6.1] 24 -> 26 -> 27；0.6.3 -> 28（新增 suppress_llm_followup）
         schema = json.loads((PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-        self.assertEqual(len(schema), 28)
+        self.assertEqual(len(schema), 30)
         for k in ("saucenao_api_key", "saucenao_base_url", "saucenao_db_mask",
                   "saucenao_min_similarity", "saucenao_hide",
                   "saucenao_enable", "yandex_enable", "yandex_base_url", "yandex_max_per_domain",

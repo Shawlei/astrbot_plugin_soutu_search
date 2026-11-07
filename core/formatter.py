@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -178,6 +179,7 @@ def format_outcome(
     max_results: int,
     header: str,
     max_chars: int = 1200,
+    thumbnail_mosaic: bool = False,
 ) -> list[dict]:
     """把一次搜索产物格式化为消息块列表。
 
@@ -188,6 +190,7 @@ def format_outcome(
         header: 首行标题文案。
         max_chars: 文本总长度上限（字符），超出按字符边界截断并追加提示；
             设为 0 或负数表示不限制。
+        thumbnail_mosaic: Mark sensitive or unrated thumbnails for pixelation.
 
     Returns:
         形如 ``[{"type": "text", "text": ...}, {"type": "image", "url": ...}]`` 的列表。
@@ -220,11 +223,60 @@ def format_outcome(
             if text:
                 blocks.append({"type": "text", "text": text})
 
-        # 仅在显式开启时才追加缩略图，且只追加缩略图 URL（绝不改动文本）
+        # Only explicit safe metadata permits an unmodified thumbnail.
         if nsfw_send_image:
             for result in results:
                 if result.thumbnail:
-                    blocks.append({"type": "image", "url": result.thumbnail})
+                    block = {"type": "image", "url": result.thumbnail}
+                    if thumbnail_mosaic:
+                        extra = result.extra if isinstance(result.extra, dict) else {}
+                        rating = str(extra.get("rating") or "").strip().casefold()
+                        tags = extra.get("tags") or []
+                        if isinstance(tags, str):
+                            tags = re.split(r"[,\s]+", tags)
+                        if not isinstance(tags, (list, tuple, set)):
+                            tags = []
+                        tags = {
+                            tag.strip().casefold().replace("_", "-")
+                            for tag in tags
+                            if isinstance(tag, str)
+                        }
+                        safe_labels = {
+                            "safe",
+                            "general",
+                            "s",
+                            "g",
+                            "sfw",
+                            "all-ages",
+                            "全年龄",
+                        }
+                        sensitive_labels = {
+                            "r18",
+                            "r-18",
+                            "r18g",
+                            "r-18g",
+                            "18+",
+                            "nsfw",
+                            "adult",
+                            "explicit",
+                            "questionable",
+                            "sensitive",
+                            "rating:explicit",
+                            "rating:questionable",
+                            "rating:sensitive",
+                        }
+                        sensitive = bool(tags & sensitive_labels) or extra.get(
+                            "nsfw"
+                        ) in (True, "true", "1")
+                        safe = rating in safe_labels or (
+                            not rating
+                            and bool(
+                                tags & {"safe", "general", "sfw", "all-ages", "全年龄"}
+                            )
+                        )
+                        if sensitive or not safe:
+                            block["mosaic"] = True
+                    blocks.append(block)
 
     return _truncate_blocks(blocks, max_chars)
 
@@ -259,6 +311,13 @@ def blocks_to_components(blocks: list[dict]) -> list:
             if text:
                 components.append(Plain(text))
         elif kind == "image":
+            if block.get("data"):
+                try:
+                    components.append(Image.fromBase64(block["data"]))
+                except Exception:
+                    # Processed thumbnails must never fall back to their original URL.
+                    continue
+                continue
             url = block.get("url")
             if not url:
                 continue

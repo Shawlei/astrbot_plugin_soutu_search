@@ -6,6 +6,24 @@
     "default": false,
     "obvious_hint": true
   },
+  "thumbnail_mosaic": {
+    "description": "缩略图安全处理",
+    "hint": "发送缩略图时，只有明确标为 safe/general/SFW/全年龄的结果直接发图；R18、敏感评级或评级不明的结果整图打码。不调用审核模型。下载或处理失败时跳过该缩略图，保留文字结果。",
+    "type": "bool",
+    "default": true,
+    "obvious_hint": true
+  },
+  "thumbnail_mosaic_level": {
+    "description": "马赛克强度",
+    "hint": "仅在发送缩略图且启用安全处理时生效。0 = 不打码；1 = 细小像素块；10 = 大块马赛克。默认 7。低强度不能充分遮挡敏感内容，打码也不保证平台接受。",
+    "type": "int",
+    "default": 7,
+    "slider": {
+      "min": 0,
+      "max": 10,
+      "step": 1
+    }
+  },
   "search_factor": {
     "description": "以图搜图模式",
     "hint": "1.2 = 常规（召回更多）；1.4 = 严格（更精确，但更容易无结果）",
